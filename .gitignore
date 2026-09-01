@@ -1,0 +1,29 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Editors and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project-generated output and temporary files
+output/
+.tmp_*/
+.star_cache/
+
+# Local datasets are large runtime inputs and are kept outside Git
+datasets/
