@@ -32,8 +32,8 @@ from .candidates import retire_candidates
 from .online_factors import affine_factors_many
 from .undetected import prepare,observe
 
-MODEL_VERSION='v2.1-factorized-joint-ppp-4'
-APPROXIMATION='FINITE_GATES; BOUNDED_LOCAL_JOINT_HISTORIES; GAUSSIAN_PPP_MERGE; AFFINE_SENSOR; MISS_STATE_RETENTION; CONFIGURED_BACKGROUND_VIEW_DORMANCY_AND_RETIREMENT'
+MODEL_VERSION='v2.1-factorized-joint-ppp-5'
+APPROXIMATION='FINITE_GATES; BOUNDED_LOCAL_JOINT_HISTORIES; GAUSSIAN_PPP_MERGE; AFFINE_SENSOR; CONFIGURED_TARGET_MISS_GAUSSIAN_PROJECTION; BACKGROUND_MISS_STATE_RETENTION; CONFIGURED_BACKGROUND_VIEW_DORMANCY_AND_RETIREMENT'
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ class FactorizedJointTracker:
                         if key not in requests:
                             requests[key]=(source,kind,obj.state,obj.existence,obj.plane,c.p_detection,c.measurement_covariance_px2)
         values=affine_factors_many(tuple(requests.values()),frame,r.camera,r.clutter.window,accepted,
-            policy_config.gate_probability,rotation=rotation,check=controller.check)
+            policy_config.gate_probability,rotation=rotation,check=controller.check,miss_update_mode=config.miss_update_mode)
         state_factor_cache=dict(zip(requests,values))
         for kind,obj in factor_objects:
             source=kind+':'+(obj.label if kind=='T' else obj.background_id)
@@ -184,6 +184,7 @@ class FactorizedJointTracker:
         updated=[];audits=[];prior_loss=0.;birth_loss=0.;log_evidence=[]
         search_summary=dict(groups=0,evaluated=0,retained=0,association_discarded_mass_sum=0.,
             association_discarded_mass_max=0.,
+            evaluated_joint_discarded_mass_sum=0.,evaluated_joint_discarded_mass_max=0.,
             omitted_mass_status='LOCAL_TRUNCATION_AND_FINITE_GATES; FULL_SEQUENCE_ERROR_UNKNOWN')
         for component in sorted(components.values(),key=repr):
             controller.check()
@@ -228,6 +229,7 @@ class FactorizedJointTracker:
             lookup={h.hypothesis_id:h for h in priors};conditional={s.reference:s.existence for s in result.conditional_states}
             output=[]
             for h in result.hypotheses:
+                controller.check()
                 if not math.isfinite(h.log_unnormalized_weight):continue
                 before=lookup[h.parent_hypothesis_id];assign=dict(h.target_assignments+h.unknown_star_assignments);refs=dict(h.conditional_state_references)
                 tracks=[];backgrounds=[]
@@ -268,11 +270,16 @@ class FactorizedJointTracker:
             output.sort(key=lambda h:(-h.weight,h.hypothesis_id))
             birth_loss+=math.fsum(h.weight for h in output[policy_config.top_k:])
             output=output[:policy_config.top_k];den=math.fsum(h.weight for h in output)
+            joint_loss=max(0.,1-(1-omitted)*den)  # probability-domain roundoff only
+            search_summary['evaluated_joint_discarded_mass_sum']+=joint_loss
+            search_summary['evaluated_joint_discarded_mass_max']=max(search_summary['evaluated_joint_discarded_mass_max'],joint_loss)
             output=tuple(replace(h,weight=h.weight/den) for h in output)
             updated.append((output,tuple(priors),tuple(source_diag)))
         return self._finish(frame,detections,accepted,updated,remaining,start,controller,
             dict(**(dict(group_audits=audits) if detail=='full' else {}),group_search_summary=search_summary,
                 truncation_mass_scope='STAGE_CONDITIONAL; GROUP_SUMS_ARE_NOT_GLOBAL_POSTERIOR_ERROR_BOUNDS',
+                target_miss_update_mode=config.miss_update_mode,
+                association_top_k=policy_config.association_top_k or policy_config.top_k,
                 prior_product_discarded_mass_sum=prior_loss,birth_branch_discarded_mass_sum=birth_loss,
                 log_predictive_set_density=sum(log_evidence)+isolated_star_log_miss-r.clutter.expected_count-detected_population,
                 first_detection_intensity=tuple((key,values) for key,values in intensities.items())),
@@ -289,6 +296,10 @@ class FactorizedJointTracker:
         background_events=[]
         for hs,priors,diag in updated:
             rows=project_track_marginals(hs,frame,life,detail=detail)
+            if frame.inertial_observation_available and r.config.miss_update_mode=='moment_matched':
+                for row in rows:
+                    if row['Measured_Or_Predicted']=='Predicted_Only':
+                        row['Measured_Or_Predicted']='Miss_Conditioned_Gaussian'
             records,ev=TrackLifecycleManager.update(tuple(old_records[v['Track_Label']] for v in rows if v['Track_Label'] in old_records),
                 rows,diag,priors,frame,life,self.version+1,self.frame)
             for row,record in zip(rows,records):

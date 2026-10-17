@@ -1,0 +1,76 @@
+{
+  "tracking": {
+    "survival_probability": 0.998,
+    "survival_reference_dt_s": 0.1,
+    "q_a": 3.162277660168379e-08,
+    "p_detection": 0.9,
+    "measurement_covariance_px2": [
+      [
+        2.0,
+        0.0
+      ],
+      [
+        0.0,
+        2.0
+      ]
+    ],
+    "parameter_provenance": "EXPLORATORY: historical continuity hypotheses, no independent identity truth; R fixed, not jointly calibrated; tools/association_trial.py; held-out tail validation",
+    "max_dt_s": 15.0,
+    "miss_update_mode": "moment_matched"
+  },
+  "inference": {
+    "gate_probability": 0.99,
+    "top_k": 16,
+    "max_nodes": 1024,
+    "max_edges": 100000,
+    "max_component_nodes": 1024,
+    "max_local_hypotheses": 512,
+    "max_candidates": 256,
+    "max_search_states": 200000,
+    "max_memory_bytes": 2147483648,
+    "max_frame_seconds": 60.0,
+    "association_top_k": 64
+  },
+  "input_metadata": {
+    "timestamp_unit": "iso",
+    "frame_period_s": 0.1,
+    "frame_zero": 0,
+    "timestamp_zero_s": 0.0,
+    "bounds_action": "mark_invalid",
+    "max_rows": 1000000,
+    "attitude_direction": "camera_to_j2000",
+    "camera": {
+      "width": 1288,
+      "height": 1040,
+      "fx_px": 3854.1666666666665,
+      "fy_px": 3854.1666666666665,
+      "cx_px": 644.0,
+      "cy_px": 520.0
+    },
+    "time_scale": "UNVERIFIED_SECONDS_FROM_NOMINAL_PLOT_PERIOD",
+    "column_mapping": {}
+  },
+  "calibration": {
+    "skew_px": 0.0,
+    "distortion_model": "none",
+    "distortion_coefficients": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_normalized_radius": 2.0,
+    "inverse_tolerance_px": 1e-09,
+    "max_iterations": 30,
+    "calibration_version": "repository_configuration_unverified",
+    "calibration_status": "unverified"
+  },
+  "geometry": {
+    "max_tangent_angle_deg": 80.0
+  },
+  "profile_id": "hit-miss-and-search-experimental-20261017",
+  "lifecycle": {
+    "max_dormant_tracks_per_group": 32
+  }
+}

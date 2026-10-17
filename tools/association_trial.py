@@ -18,7 +18,7 @@ from space_target_detection.v2.observation_geometry import observe_detection
 from space_target_detection.v2.tracking.model import cv_matrices
 
 
-def calibrate(folder, packet, raw):
+def calibration_observations(folder, packet, raw):
     # Exclude the previously diagnosed reconnect/crossing portions.
     segments={1:(147,156),93:(426,460),134:(470,496),136:(471,499)}
     with (folder/'trajectory_points.csv').open(encoding='utf-8-sig') as f:
@@ -41,6 +41,11 @@ def calibrate(folder, packet, raw):
             J=np.asarray(o.jacobian_tangent_pixel)
             observations.append((f.timestamp_s,np.asarray(o.tangent_position),J@np.asarray(raw['tracking']['measurement_covariance_px2'])@J.T))
         data.append((tid,observations))
+    return data
+
+
+def calibrate(folder, packet, raw):
+    data=calibration_observations(folder,packet,raw)
     H=np.column_stack((np.eye(2),np.zeros((2,2))))
     def score(q):
         scores=[[],[]];nis=[[],[]]

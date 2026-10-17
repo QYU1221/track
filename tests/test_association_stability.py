@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
-from space_target_detection.v2.exact.contracts import GaussianState
+from space_target_detection.v2.exact.contracts import GaussianState,ObservationWindow
 from space_target_detection.v2.geometry_errors import GeometryError
 from space_target_detection.v2.tracking.model import predict_gaussian
 from space_target_detection.v2.tracking import online_factors as factors
@@ -57,6 +57,23 @@ class AssociationStabilityTests(unittest.TestCase):
         self.assertEqual(keep,(0,1))
         self.assertAlmostEqual(policy.audit['discarded_mass_within_evaluated_candidates'],.2)
         self.assertIn('UNKNOWN',policy.audit['omitted_mass_status'])
+
+    def test_later_pruning_preserves_association_candidates_without_rescoring(self):
+        logs=np.log([.5,.3,.15,.05])
+        plans=[(None,SimpleNamespace(hypothesis_id=str(i))) for i in range(4)]
+        policy=GraphInferencePolicy(SimpleNamespace(top_k=2,association_top_k=4),None,detail='compact')
+        self.assertEqual(policy.select(plans,logs),(0,1,2,3))
+        self.assertEqual(policy.audit['discarded_mass_within_evaluated_candidates'],0.)
+
+    def test_miss_projection_preserves_hit_and_existence_evidence(self):
+        mu,H,R,S,_=self.projection(self.state,0)
+        args=('T:a','T',self.state,.8,self.detections,.9,.99,mu,H,R,S,.5,
+              np.zeros((1,2)),(0.,),np.linalg.slogdet(S)[1],ObservationWindow((0.,100.,-100.,100.)))
+        retained=factors._affine_result(*args,miss_update_mode='retain')
+        projected=factors._affine_result(*args,miss_update_mode='moment_matched')
+        self.assertEqual(retained[0],projected[0])
+        self.assertEqual(retained[1][(1,'a')],projected[1][(1,'a')])
+        self.assertNotEqual(retained[1][None],projected[1][None])
 
     def test_online_identity_is_not_reported_as_final_identity(self):
         reporter=object.__new__(XStyleReporter)

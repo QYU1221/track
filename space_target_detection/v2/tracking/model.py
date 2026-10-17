@@ -89,6 +89,7 @@ class TrackingConfig:
     parameter_provenance: str
     max_dt_s: float
     survival_reference_dt_s: float
+    miss_update_mode: str = 'retain'
 
     def __post_init__(self):
         from ..contracts import checked_covariance
@@ -101,6 +102,8 @@ class TrackingConfig:
         if self.survival_reference_dt_s<=0: raise ValueError('positive survival reference seconds required')
         object.__setattr__(self,'measurement_covariance_px2',tuple(map(tuple,checked_covariance(self.measurement_covariance_px2))))
         identifier(self.parameter_provenance,'parameter provenance')
+        if self.miss_update_mode not in ('retain','moment_matched'):
+            raise ValueError('miss_update_mode must be retain or moment_matched')
 
 
 def predict_track(track: Track,dt: float,config: TrackingConfig) -> Track:

@@ -2,8 +2,9 @@
 
 The observation model is z=mu+H(x-m)+epsilon, accepted inside W. Its
 effective detection probability integrates the predictive Gaussian over W.
-The miss-conditioned state is retained as a Gaussian approximation (not
-claimed to be an exact or moment-matched finite-window posterior).
+The target miss state is either retained or moment-projected according to
+configuration. Background miss states retain the previous approximation.
+Neither mode claims a Gaussian-exact finite-window posterior.
 """
 import math
 from functools import lru_cache
@@ -36,7 +37,7 @@ def _inertial_geometry(mean,plane):
     return u,J
 
 
-def affine_factors(source_id,kind,state,existence,plane,frame,camera,window,detections,pd,R,gate,*,rotation=None):
+def affine_factors(source_id,kind,state,existence,plane,frame,camera,window,detections,pd,R,gate,*,rotation=None,miss_update_mode='retain'):
     try:
         mu,H,R,S,mass=_affine_projection(state,plane,frame,camera,window,R,rotation)
     except GeometryError as error:
@@ -47,7 +48,7 @@ def affine_factors(source_id,kind,state,existence,plane,frame,camera,window,dete
     distances=ProbabilisticGate.distances(residuals,S) if detections else ()
     logdet=np.linalg.slogdet(S)[1]
     return _affine_result(source_id,kind,state,existence,detections,pd,gate,
-        mu,H,R,S,mass,residuals,distances,logdet)
+        mu,H,R,S,mass,residuals,distances,logdet,window,miss_update_mode)
 
 
 def _affine_projection(state,plane,frame,camera,window,R,rotation):
@@ -62,10 +63,13 @@ def _affine_projection(state,plane,frame,camera,window,R,rotation):
 
 
 def _affine_result(source_id,kind,state,existence,detections,pd,gate,
-                   mu,H,R,S,mass,residuals,distances,logdet):
+                   mu,H,R,S,mass,residuals,distances,logdet,window=None,miss_update_mode='retain'):
     pd_bar=pd*mass
     threshold=ProbabilisticGate.threshold(gate) if gate is not None else math.inf
     logs=[];states={None:state}
+    if kind=='T' and miss_update_mode=='moment_matched':
+        from .missed_update import miss_conditioned_gaussian
+        states[None]=miss_conditioned_gaussian(state,H,R,mu,S,window,pd,mass)
     for d,residual,distance in zip(detections,residuals,distances):
         value=math.log(pd)-math.log(2*math.pi)-.5*(logdet+distance) if pd>0 and distance<=threshold else -math.inf
         logs.append(value)
@@ -77,7 +81,7 @@ def _affine_result(source_id,kind,state,existence,detections,pd,gate,
     return factor,states,(tuple(mu),tuple(map(tuple,S)))
 
 
-def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=None,check=None):
+def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=None,check=None,miss_update_mode='retain'):
     """Batch independent gates/log determinants, retaining scalar window integrals.
 
     A request is (source ID, kind, state, existence, plane, PD, R). Chunking
@@ -86,7 +90,7 @@ def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=
     """
     if len(requests)<16:
         return tuple(affine_factors(source,kind,state,existence,plane,frame,camera,window,detections,pd,R,gate,
-            rotation=rotation) for source,kind,state,existence,plane,pd,R in requests)
+            rotation=rotation,miss_update_mode=miss_update_mode) for source,kind,state,existence,plane,pd,R in requests)
     output=[]
     pixels=np.asarray([(d.x_px,d.y_px) for d in detections]).reshape(-1,2)
     for start in range(0,len(requests),128):
@@ -118,5 +122,5 @@ def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=
             mu,H,R,S,mass=projection
             residual,distance,logdet=computed[position]
             output.append(_affine_result(source,kind,state,existence,detections,pd,gate,
-                mu,H,R,S,mass,residual,distance,logdet))
+                mu,H,R,S,mass,residual,distance,logdet,window,miss_update_mode))
     return tuple(output)

@@ -19,6 +19,7 @@
   "catalog_path": "../../NavStar_8mag.dat",
   "catalog_mag_limit": 7.5,
   "tracking": {
+    "miss_update_mode": "retain",
     "survival_probability": 0.998,
     "survival_reference_dt_s": 0.1,
     "q_a": 3.753049352598986e-05,
@@ -82,6 +83,7 @@
     "max_dormant_tracks_per_group": 8
   },
   "inference": {
+    "association_top_k": null,
     "gate_probability": 0.99,
     "top_k": 4,
     "max_nodes": 1024,

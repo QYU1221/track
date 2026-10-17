@@ -22,10 +22,12 @@ def summarize(folder):
             identity_cases[str(row['frame'])]={str(key):dict(values) for key,values in beta.items() if max(values.values())>.1}
     birth=[a.get('birth_branch_discarded_mass_sum',0.) for a in audits]
     association=[a.get('group_search_summary',{}).get('association_discarded_mass_sum',0.) for a in audits]
+    joint=[a.get('group_search_summary',{}).get('evaluated_joint_discarded_mass_sum') for a in audits]
     return dict(status=summary['status'],frames=summary['frames_committed'],failed=summary['failed_frame'],
                 target_identity_ambiguous_points=ambiguities,points_with_target_support=points,
                 birth_discarded_sum_max=max(birth),birth_discarded_sum_mean=sum(birth)/len(birth),
                 association_discarded_sum_max=max(association),association_discarded_sum_mean=sum(association)/len(association),
+                evaluated_joint_discarded_sum_mean=sum(joint)/len(joint) if all(v is not None for v in joint) else None,
                 performance=summary['performance_quantiles_s'],identity_cases=identity_cases,
                 caveat='Conditional retained-candidate probabilities; no identity truth and no global error bound')
 

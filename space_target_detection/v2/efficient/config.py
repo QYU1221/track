@@ -18,8 +18,12 @@ class InferenceConfig:
     max_search_states: int
     max_memory_bytes: int
     max_frame_seconds: float
+    association_top_k: int = None
 
     def __post_init__(self):
+        if self.association_top_k is not None and (isinstance(self.association_top_k,bool) or
+                not isinstance(self.association_top_k,int) or self.association_top_k<self.top_k):
+            raise ValueError('association_top_k must be null or an integer >= top_k')
         if isinstance(self.gate_probability,bool) or not 0<self.gate_probability<1:
             raise ValueError('gate probability must lie strictly between zero and one')
         for name,value in vars(self).items():

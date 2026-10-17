@@ -141,6 +141,10 @@ def gaussian_hit_updates(state: GaussianState,H: np.ndarray,R: np.ndarray,residu
     S = checked_covariance(H @ P @ H.T+R)
     K = np.linalg.solve(S,H @ P).T
     A = np.eye(len(state.mean))-K @ H
-    covariance=tuple(map(tuple,A @ P @ A.T+K @ R @ K.T))
+    covariance=A @ P @ A.T+K @ R @ K.T
+    # Joseph's expression is symmetric analytically. Remove multiplication
+    # roundoff here, after validating inputs; do not alter eigenvalues or
+    # relax the public covariance validation contract.
+    covariance=tuple(map(tuple,(covariance+covariance.T)/2))
     mean=np.asarray(state.mean)
     return tuple(type(state)(tuple(mean+K @ residual),covariance) for residual in residuals)

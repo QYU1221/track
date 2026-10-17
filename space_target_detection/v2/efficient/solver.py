@@ -182,7 +182,8 @@ class GraphInferencePolicy:
 
     def select(self,plans,logs):
         c=self.config
-        keep,omitted,evidence=HypothesisPruner.select(logs,[p[1].hypothesis_id for p in plans],c.top_k)
+        limit=getattr(c,'association_top_k',None) or c.top_k
+        keep,omitted,evidence=HypothesisPruner.select(logs,[p[1].hypothesis_id for p in plans],limit)
         if self.detail=='compact':
             self.audit=dict(evaluated_candidates=len(plans),retained_candidates=len(keep),
                 discarded_mass_within_evaluated_candidates=omitted,
