@@ -1,0 +1,24 @@
+{
+  "target_run": "20261016_143755_647928_点目标筛选前1040.xlsx",
+  "verified_source_files": 41,
+  "source_hashes_all_match": true,
+  "default_config_hash_matches": true,
+  "changed_files": [
+    "README.md",
+    "pipeline\\configuration.py",
+    "v2\\data_io.py",
+    "v2\\reporting\\artifacts.py",
+    "v2\\tracking\\factorized.py",
+    "v2\\tracking\\io.py",
+    "v2\\tracking\\lifecycle.py",
+    "v2\\tracking\\marginals.py",
+    "v2\\tracking\\model.py",
+    "v2\\tracking\\online_checkpoint.py",
+    "v2\\tracking\\online_factors.py",
+    "v2\\tracking\\undetected.py",
+    "pipeline\\profiles\\default.json",
+    "pipeline\\profiles\\README.md"
+  ],
+  "backup": "current_backup",
+  "note": "V2 source and default profile verified against saved hashes. Other Python source files predate target; documentation restored from recorded patches."
+}

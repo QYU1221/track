@@ -1,0 +1,386 @@
+
+    Directory: D:\desk\space_target_detection_v2\output\20261016_144845_383289_点目标筛选实验数据.xlsx\public_input
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          2026/10/16    14:48        1903675 catalog.csv
+-a---          2026/10/16    14:48       22046249 detections.csv
+-a---          2026/10/16    14:48        1215585 frames.csv
+-a---          2026/10/16    14:48            506 input_metadata.json
+"""Independent pixel measurement covariance propagation (D-12 A)."""
+import numpy as np
+from .numerical_policy import BASIS_EPS_MULTIPLIER
+from .contracts import checked_covariance, finite
+
+
+def checked_los_covariance(value: np.ndarray) -> np.ndarray:
+    """Finite symmetric PSD covariance with numerical rank 2; no repairs."""
+    C_los = finite(value,'LOS covariance')
+    if C_los.shape != (3,3):
+        raise ValueError('LOS covariance must have shape (3,3)')
+    scale = np.max(np.abs(C_los))
+    tolerance = BASIS_EPS_MULTIPLIER*np.finfo(float).eps*scale
+    if scale == 0 or np.max(np.abs(C_los-C_los.T)) > tolerance:
+        raise ValueError('LOS covariance must be nonzero and symmetric')
+    eigenvalues = np.linalg.eigvalsh(C_los)
+    if eigenvalues[0] < -tolerance or eigenvalues[1] <= tolerance or abs(eigenvalues[0]) > tolerance:
+        raise ValueError('LOS covariance must be PSD with numerical rank 2')
+    return C_los
+
+
+def propagate_los_covariance(covariance_px2: np.ndarray,
+                            jacobian_inertial_pixel: np.ndarray) -> np.ndarray:
+    """Validate and propagate independent pixel error to rank-2 LOS space."""
+    R = checked_covariance(covariance_px2)
+    J = finite(jacobian_inertial_pixel,'LOS Jacobian')
+    if J.shape != (3,2):
+        raise ValueError('LOS Jacobian dimensions must be (3,2)')
+    return checked_los_covariance(J @ R @ J.T)
+
+
+def propagate_tangent_covariance(covariance_los: np.ndarray,
+                                 jacobian_tangent_inertial: np.ndarray) -> np.ndarray:
+    """Transport an already computed LOS covariance, without recounting error."""
+    C = checked_los_covariance(covariance_los)
+    G = finite(jacobian_tangent_inertial,'tangent Jacobian')
+    if G.shape != (2,3):
+        raise ValueError('tangent Jacobian dimensions must be (2,3)')
+    return checked_covariance(G @ C @ G.T)
+
+
+"""Causal observation geometry; no classification, tracks or hidden truth."""
+from dataclasses import dataclass
+from typing import Optional, Tuple
+import numpy as np
+from .numerical_policy import UNIT_VECTOR_EPS_MULTIPLIER, PROBABILITY_EPS_MULTIPLIER
+from .contracts import Detection, FrameInfo, checked_covariance, finite
+from .camera_model import CameraModel
+from .attitude import camera_to_inertial
+from .gnomonic import GnomonicPlane
+from .geometry_errors import GeometryError
+from .measurement_covariance import propagate_los_covariance,propagate_tangent_covariance,checked_los_covariance
+
+def frozen_array(value):
+    if value is None:
+        return None
+    a = np.asarray(value)
+    return tuple(tuple(float(v) for v in row) for row in a) if a.ndim == 2 else tuple(float(v) for v in a)
+
+
+@dataclass(frozen=True)
+class GeometryObservation:
+    detection_key: Tuple[int,str]
+    timestamp_s: float
+    pixel_position: tuple
+    pixel_covariance: Optional[tuple]
+    camera_los: Optional[tuple]
+    j2000_los: Optional[tuple]
+    los_covariance: Optional[tuple]
+    tangent_position: Optional[tuple]
+    tangent_covariance: Optional[tuple]
+    tangent_reference_id: str
+    attitude_valid: bool
+    geometry_valid: bool
+    covariance_valid: bool
+    covariance_source: str
+    calibration_version: str
+    calibration_status: str
+    quality_flags: tuple
+    normalized_image: Optional[tuple] = None
+    jacobian_los_pixel: Optional[tuple] = None
+    jacobian_tangent_pixel: Optional[tuple] = None
+    tangent_coordinate_type: str = 'gnomonic_ratio'
+
+    def __post_init__(self):
+        object.__setattr__(self,'detection_key',tuple(self.detection_key))
+        object.__setattr__(self,'quality_flags',tuple(self.quality_flags))
+        for name,shape in (('pixel_position',(2,)),('pixel_covariance',(2,2)),
+                           ('camera_los',(3,)),('j2000_los',(3,)),('los_covariance',(3,3)),
+                           ('tangent_position',(2,)),('tangent_covariance',(2,2)),
+                           ('normalized_image',(2,)),('jacobian_los_pixel',(3,2)),('jacobian_tangent_pixel',(2,2))):
+            value = getattr(self,name)
+            if value is not None:
+                a = finite(value,name)
+                if a.shape != shape:
+                    raise ValueError('invalid geometry observation dimensions: '+name)
+                object.__setattr__(self,name,frozen_array(a))
+        finite(self.timestamp_s,'geometry timestamp')
+        for direction in (self.camera_los,self.j2000_los):
+            if (direction is not None and not np.isclose(np.dot(direction,direction),1.,rtol=0,
+                    atol=UNIT_VECTOR_EPS_MULTIPLIER*np.finfo(float).eps)):
+                raise ValueError('geometry LOS must be a unit direction')
+        if not self.attitude_valid and self.j2000_los is not None:
+            raise ValueError('invalid attitude cannot expose trusted J2000 LOS')
+        if self.los_covariance is not None:
+            C = checked_los_covariance(self.los_covariance)
+            if (self.j2000_los is None or np.linalg.norm(C @ self.j2000_los) >
+                    PROBABILITY_EPS_MULTIPLIER*np.finfo(float).eps*np.max(np.abs(C))):
+                raise ValueError('LOS covariance must be tangent to the observed unit direction')
+        if self.geometry_valid and any(v is None for v in (self.camera_los,self.j2000_los,self.tangent_position)):
+            raise ValueError('valid geometry requires complete directional observations')
+        if self.covariance_valid and (self.los_covariance is None or self.tangent_covariance is None):
+            raise ValueError('valid covariance requires LOS and tangent covariance')
+        for matrix in (self.pixel_covariance,self.tangent_covariance):
+            if matrix is not None:
+                checked_covariance(matrix)
+        if self.tangent_coordinate_type != 'gnomonic_ratio':
+            raise ValueError('geometry1.0 accepts only gnomonic ratio observations')
+
+
+def observe_detection(detection: Detection, frame: FrameInfo, model: CameraModel,
+                      plane: GnomonicPlane) -> GeometryObservation:
+    """Keep every raw record; flag expected invalid geometry explicitly.
+
+    Covariance_Valid means numerical validity, not scientific calibration.
+    Missing Sigma retains valid directional geometry but no fabricated R.
+    """
+    if detection.frame != frame.frame:
+        raise ValueError('detection key and frame metadata disagree')
+    flags = []
+    if model.calibration_status not in ('calibrated','synthetic_test_value'):
+        flags.append('camera_calibration_unverified')
+    if detection.covariance_status != 'simulation_known':
+        flags.append(detection.covariance_status)
+    if not detection.valid:
+        flags.append(detection.invalid_reason)
+    if not frame.input_available:
+        flags.append('input_missing')
+    if not frame.attitude_valid:
+        flags.append('attitude_invalid')
+    base = dict(detection_key=detection.key,timestamp_s=frame.timestamp_s,
+                pixel_position=(detection.x_px,detection.y_px),pixel_covariance=detection.covariance_px2,
+                camera_los=None,j2000_los=None,los_covariance=None,tangent_position=None,
+                tangent_covariance=None,tangent_reference_id=plane.reference_id,
+                attitude_valid=frame.attitude_valid,geometry_valid=False,covariance_valid=False,
+                covariance_source=detection.covariance_status,calibration_version=model.calibration_version,
+                calibration_status=model.calibration_status,quality_flags=())
+    if detection.valid and frame.input_available:
+        try:
+            ray = model.pixel_to_camera(base['pixel_position'])
+            base.update(camera_los=frozen_array(ray['camera_los']),normalized_image=frozen_array(ray['normalized_image']))
+            if frame.attitude_valid:
+                u,J = camera_to_inertial(ray['camera_los'],ray['jacobian_camera_pixel'],frame.quaternion_xyzw)
+                base.update(j2000_los=frozen_array(u),jacobian_los_pixel=frozen_array(J))
+                if detection.covariance_px2 is not None:
+                    base['los_covariance'] = frozen_array(propagate_los_covariance(detection.covariance_px2,J))
+                position,G = plane.project(u)
+                base.update(tangent_position=frozen_array(position),jacobian_tangent_pixel=frozen_array(G @ J),geometry_valid=True)
+                if detection.covariance_px2 is not None:
+                    covariance = propagate_tangent_covariance(base['los_covariance'],G)
+                    base.update(tangent_covariance=frozen_array(covariance),covariance_valid=True)
+        except GeometryError as error:
+            flags.append(error.code)
+        # Unexpected programming exceptions are not suppressed as invalid data.
+    base['quality_flags'] = tuple(flags)
+    return GeometryObservation(**base)
+    "gate_probability": 0.99,
+    "top_k": 4,
+    "max_nodes": 1024,
+    "max_edges": 100000,
+    "max_component_nodes": 1024,
+    "max_local_hypotheses": 128,
+    "max_candidates": 32,
+    "max_search_states": 200000,
+    "max_memory_bytes": 2147483648,
+    "max_frame_seconds": 60.0
+  },
+  "input_metadata": {
+    "camera": {
+      "width": 2048,
+      "height": 2048,
+      "fx_px": 7300.0,
+      "fy_px": 7300.0,
+      "cx_px": 1024.0,
+      "cy_px": 1024.0
+    },
+    "time_scale": "UNVERIFIED_SECONDS_FROM_NOMINAL_PLOT_PERIOD",
+    "timestamp_unit": "s",
+    "frame_period_s": 0.1,
+    "frame_zero": 0,
+    "timestamp_zero_s": 0.0,
+    "bounds_action": "mark_invalid",
+    "column_mapping": {},
+    "max_rows": 1000000,
+    "attitude_direction": "camera_to_j2000"
+  },
+  "calibration": {
+    "skew_px": 0.0,
+    "distortion_model": "none",
+    "distortion_coefficients": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_normalized_radius": 2.0,
+    "inverse_tolerance_px": 1e-09,
+    "max_iterations": 30,
+    "calibration_version": "repository_configuration_unverified",
+    "calibration_status": "unverified"
+  },
+  "geometry": {
+    "max_tangent_angle_deg": 80.0
+  },
+  "configuration_schema": "online-parameters-1",
+  "numerical_policy": {
+    "POLICY_VERSION": "numerical-policy-2",
+    "SYMMETRY_EPS_MULTIPLIER": 32,
+    "UNIT_VECTOR_EPS_MULTIPLIER": 64,
+    "BASIS_EPS_MULTIPLIER": 128,
+    "PROBABILITY_EPS_MULTIPLIER": 256,
+    "POSTERIOR_NORMALIZATION_ATOL": 1e-09,
+    "CHECKPOINT_NORMALIZATION_ATOL": 1e-10,
+    "QUADRATURE_ABS_TOL": 1e-12,
+    "QUADRATURE_REL_TOL": 1e-10,
+    "QUADRATURE_ERROR_LIMIT": 1e-09,
+    "QUADRATURE_SUBDIVISIONS": 200,
+    "NORMAL_INTEGRATION_CUTS": [
+      -12.0,
+      -6.0,
+      0.0,
+      6.0,
+      12.0
+    ],
+    "WINDOW_INTERIOR_SIGMA": 9.0,
+    "DISPLAY_CLASS_TIE_ATOL": 1e-13,
+    "DISPLAY_PROJECTION_MIN_Z": 1e-10,
+    "DISPLAY_SPAN_FLOOR": 1e-09,
+    "DISPLAY_DIRECTION_SINE_FLOOR": 1e-12,
+    "DISPLAY_VECTOR_NORM_FLOOR": 1e-08
+  },
+  "bootstrap_definition": {
+    "schema": "population-bootstrap-2",
+    "star_detection_probability": 0.9,
+    "birth_scope": "undetected target and uncatalogued-star Poisson populations; every valid frame may produce first-detection candidates in the same source update; no fixed finite birth cohort"
+  },
+  "initial_timestamp_s": 0.0,
+  "stars": [
+    {
+      "known_star_id": "NAVSTAR:24088",
+      "p_detection": 0.9,
+      "measurement_covariance_px2": [
+        [
+          2.0,
+          0.0
+        ],
+        [
+          0.0,
+          2.0
+        ]
+      ]
+    },
+    {
+      "known_star_id": "NAVSTAR:24112",
+      "p_detection": 0.9,
+      "measurement_covariance_px2": [
+        [
+          2.0,
+          0.0
+        ],
+        [
+          0.0,
+          2.0
+        ]
+      ]
+"""Strict real-table normalization and public ObservationPacket persistence.
+
+The inference loader opens only frames.csv, detections.csv, catalog.csv and
+input_metadata.json. It never opens a truth file or the simulation manifest.
+"""
+from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+import csv
+import json
+import numpy as np
+from . import PUBLIC_INPUT_SCHEMA_VERSION
+from .contracts import Camera, Detection, FrameInfo, KnownStar, ObservationPacket, checked_covariance
+from .attitude import adapt_quaternion
+
+FEATURES = ('Flux', 'Peak_Intensity', 'Area', 'SNR', 'Confidence',
+            'Background_Mean', 'Background_Std', 'PSF_Width_X', 'PSF_Width_Y', 'Fit_Residual')
+DEFAULT_MAPPING = {
+    'Frame': ('Frame',), 'Timestamp': ('Timestamp', 'Timestamp_s'),
+    'Detection_ID': ('Detection_ID',), 'x': ('x', 'Image_X_px', 'Pixel_X'),
+    'y': ('y', 'Image_Y_px', 'Pixel_Y'), 'Sigma_X': ('Sigma_X',),
+    'Sigma_Y': ('Sigma_Y',), 'Cov_XY': ('Cov_XY',),
+    'Attitude_Valid': ('Attitude_Valid',), 'Input_Available': ('Input_Available',),
+    'q1': ('q1',), 'q2': ('q2',), 'q3': ('q3',), 'q4_scalar': ('q4_scalar',),
+    **{name: (name,) for name in FEATURES},
+    'Flux': ('Flux', 'Brightness'),
+}
+FORBIDDEN_PREFIXES = ('true_', 'truth_', 'object_id', 'true_track', 'canonical_track', 'track_id')
+FRAME_FIELDS = ('Frame', 'Timestamp_s', 'Input_Available', 'Attitude_Valid', 'q1', 'q2', 'q3', 'q4_scalar')
+DETECTION_FIELDS = ('Frame', 'Detection_ID', 'x', 'y', 'Sigma_X', 'Sigma_Y', 'Cov_XY',
+                    'Covariance_Status', 'Valid', 'Invalid_Reason', *FEATURES)
+CATALOG_FIELDS = ('KnownStar_ID', 'LOS_J2000_X', 'LOS_J2000_Y', 'LOS_J2000_Z')
+
+
+def parse_frame(value: Any) -> int:
+    """Accept non-negative integral frame numbers without truncation."""
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValueError('Frame must be a finite non-negative integer: %r' % value)
+    if (not number.is_finite() or number < 0 or
+            number != number.to_integral_value() or number > 2147483647):
+        raise ValueError('Frame must be an integer in [0, 2147483647]: %r' % value)
+    return int(number)
+
+
+def read_table(path: Union[str, Path], max_rows: int) -> Tuple[tuple, List[Dict[str, Any]]]:
+    """Read CSV/XLSX rows with a size limit and duplicate-header validation."""
+    if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 1:
+        raise ValueError('max_rows must be a positive integer')
+    path = Path(path)
+    if path.suffix.lower() == '.csv':
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            rows = []
+            for row in csv.reader(stream):
+                if len(rows) > max_rows:
+                    raise ValueError('table exceeds configured row limit')
+                rows.append(row)
+    elif path.suffix.lower() == '.xlsx':
+        from openpyxl import load_workbook
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            rows = []
+            for row in workbook.active.iter_rows(values_only=True):
+                if len(rows) > max_rows:
+                    raise ValueError('table exceeds configured row limit')
+                rows.append(row)
+        finally:
+            workbook.close()
+    else:
+        raise ValueError('table must be CSV or XLSX')
+    if not rows:
+        raise ValueError('table must contain a header, even when empty')
+    header = tuple(str(x).strip() if x is not None else '' for x in rows[0])
+    if any(not name for name in header) or len({h.lower() for h in header}) != len(header):
+        raise ValueError('table has blank or duplicate column names')
+    records = []
+    for row_number, row in enumerate(rows[1:], 2):
+        if all(value is None or str(value).strip() == '' for value in row):
+            continue
+        if len(row) != len(header):
+            raise ValueError('row %d has a different column count' % row_number)
+        records.append(dict(zip(header, row)))
+        if len(records) > max_rows:
+            raise ValueError('table exceeds configured row limit')
+    return header, records
+
+
+def write_csv(path: Union[str, Path], fields: tuple, rows: List[dict]) -> None:
+-0.003260	 0.001947	 -0.999993	 -89.782428	 149.157819	 7.84 
+-0.003102	 -0.002501	 -0.999992	 -89.771717	 218.872917	 6.82 
+-0.006118	 0.007157	 -0.999956	 -89.460534	 130.522775	 7.20 
+-0.005763	 -0.010603	 -0.999927	 -89.308548	 241.476227	 7.83 
+
+    Directory: D:\desk\space_target_detection_v2\output\20261016_144845_383289_点目标筛选实验数据.xlsx\debug
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---          2026/10/16    16:34       16187136 terminal_output.log
+
