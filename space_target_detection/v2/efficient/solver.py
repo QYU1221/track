@@ -184,7 +184,9 @@ class GraphInferencePolicy:
         c=self.config
         keep,omitted,evidence=HypothesisPruner.select(logs,[p[1].hypothesis_id for p in plans],c.top_k)
         if self.detail=='compact':
-            self.audit=dict(evaluated_candidates=len(plans),retained_candidates=len(keep))
+            self.audit=dict(evaluated_candidates=len(plans),retained_candidates=len(keep),
+                discarded_mass_within_evaluated_candidates=omitted,
+                omitted_mass_status='CANDIDATE_CONDITIONAL_ONLY; PRE_GATED_FACTORS_AND_BEAM_LOSS_UNKNOWN')
             return keep
         truncated=len(keep)<len(plans) and omitted>0
         self.audit={'mode':'APPROXIMATE_FAST','graphs':tuple(self.records),'evaluated_candidates':len(plans),

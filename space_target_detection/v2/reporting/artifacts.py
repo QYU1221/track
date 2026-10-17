@@ -165,8 +165,8 @@ class XStyleReporter:
                 item['Track_ID'] = track['id']
                 item['Existence_Probability'] = marginals[label]['Existence_Probability']
                 item['Online_Canonical_ID'] = marginals[label]['Canonical_Track_ID']
-                item['Final_Canonical_ID'] = marginals[label]['Canonical_Track_ID']
-                item['Identity_Status'] = 'PERSISTENT_LABEL'
+                item['Identity_Status'] = 'ONLINE_ASSOCIATION_ONLY'
+                item['Identity_Posterior'] = association
                 measured[label] = (detection, item, association)
             self.points[detection.key] = item
 
@@ -201,7 +201,10 @@ class XStyleReporter:
                        decision_reason=marginal['Management_Reason'],
                        measured_frames=track['measured_frames'],
                        canonical_track_id=marginal.get('Canonical_Track_ID'),
-                       measured_or_predicted=source, _direction=direction)
+                       measured_or_predicted=source,
+                       posterior_update_kind=marginal.get('Measured_Or_Predicted'),
+                       miss_association_probability=marginal.get('Miss_Association_Probability'),
+                       _direction=direction)
             if direction is not None:
                 row.update(ra_deg=math.degrees(math.atan2(direction[1], direction[0])),
                            dec_deg=math.degrees(math.asin(float(np.clip(direction[2], -1, 1)))))
@@ -244,7 +247,8 @@ class XStyleReporter:
                     Existence_Probability=None,
                     Decision_Reason='unique_maximum_source_posterior' if group != '未知' else 'unavailable_or_tied_source_posterior',
                     Timestamp_s=frame.timestamp_s, Online_Canonical_ID=None,
-                    Final_Canonical_ID=None, Identity_Status=None, Identity_Posterior=None,
+                    Final_Canonical_ID=None,
+                    Identity_Status='UNRESOLVED' if valid else 'UNAVAILABLE', Identity_Posterior=None,
                     Known_Star_Probability=point.get('P_Known_Star'),
                     Unknown_Star_Probability=point.get('P_Unknown_Star'),
                     Existing_Target_Probability=point.get('P_Existing_Target'),

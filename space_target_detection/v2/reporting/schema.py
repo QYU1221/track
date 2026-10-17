@@ -26,7 +26,8 @@ TRAJECTORY_FIELDS = ['track_id', 'frame', 'x', 'y', 'source', 'status', 'classif
  'catalog_star', 'geometry_valid', 'measured_frames', 'observation_coverage',
  'max_observation_gap', 'track_confidence', 'decision_reason', 'inertial_observation_count',
  'inertial_speed_px_frame', 'inertial_fit_rms_px', 'inertial_stationary_rms_px',
- 'inertial_sigma_px', 'inertial_moving', 'inertial_fixed']
+ 'inertial_sigma_px', 'inertial_moving', 'inertial_fixed',
+ 'posterior_update_kind', 'miss_association_probability']
 
 EVENT_FIELDS = ['frame', 'timestamp', 'track_id', 'event_type', 'event_reason', 'related_track_id', 'value',
  'details']

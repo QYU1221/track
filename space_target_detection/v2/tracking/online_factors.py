@@ -12,6 +12,20 @@ from ..exact.contracts import SourceFactors
 from ..exact.sources import project_direction_pixel
 from ..exact.numerics import gaussian_window_mass, gaussian_hit_updates
 from ..efficient.graph import ProbabilisticGate
+from ..geometry_errors import GeometryError
+
+_INVISIBLE_CODES = ('camera_singularity', 'distortion_domain', 'tangent_domain')
+
+
+def _invisible_factor(source_id, kind, state, existence, detections):
+    """Source outside the declared geometry domains: effective PD=0.
+
+    Same declared degradation as the exact backend's out-of-domain sources;
+    the miss factor is 1 so existence only decays by survival. Gate geometry
+    is None so callers skip distance computation entirely.
+    """
+    return SourceFactors(source_id, kind, existence, 0.0,
+                         tuple(-math.inf for _ in detections)), {None: state}, None
 
 
 @lru_cache(maxsize=4096)
@@ -23,7 +37,12 @@ def _inertial_geometry(mean,plane):
 
 
 def affine_factors(source_id,kind,state,existence,plane,frame,camera,window,detections,pd,R,gate,*,rotation=None):
-    mu,H,R,S,mass=_affine_projection(state,plane,frame,camera,window,R,rotation)
+    try:
+        mu,H,R,S,mass=_affine_projection(state,plane,frame,camera,window,R,rotation)
+    except GeometryError as error:
+        if error.code not in _INVISIBLE_CODES:
+            raise
+        return _invisible_factor(source_id,kind,state,existence,detections)
     residuals=np.asarray([(d.x_px-mu[0],d.y_px-mu[1]) for d in detections]).reshape(-1,2)
     distances=ProbabilisticGate.distances(residuals,S) if detections else ()
     logdet=np.linalg.slogdet(S)[1]
@@ -73,16 +92,31 @@ def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=
     for start in range(0,len(requests),128):
         if check is not None:check()
         chunk=requests[start:start+128]
-        projected=[_affine_projection(state,plane,frame,camera,window,R,rotation)
-                   for _,_,state,_,plane,_,R in chunk]
-        means=np.asarray([v[0] for v in projected])
-        covariances=np.asarray([v[3] for v in projected])
-        residuals=pixels[None,:,:]-means[:,None,:]
-        distances=ProbabilisticGate.distances_many(residuals,covariances) if detections else [()]*len(chunk)
-        logdets=np.linalg.slogdet(covariances)[1]
-        for request,projection,residual,distance,logdet in zip(chunk,projected,residuals,distances,logdets):
+        projected=[]
+        for request in chunk:
+            _,_,state,_,plane,_,R=request
+            try:
+                projected.append(_affine_projection(state,plane,frame,camera,window,R,rotation))
+            except GeometryError as error:
+                if error.code not in _INVISIBLE_CODES:
+                    raise
+                projected.append(None)
+        positions=[position for position,value in enumerate(projected) if value is not None]
+        means=np.asarray([projected[position][0] for position in positions])
+        covariances=np.asarray([projected[position][3] for position in positions])
+        residuals=pixels[None,:,:]-means[:,None,:] if positions else np.zeros((0,0,2))
+        distances=ProbabilisticGate.distances_many(residuals,covariances) if detections and positions else [()]*len(positions)
+        logdets=np.linalg.slogdet(covariances)[1] if positions else np.asarray([])
+        computed={position:(residuals[row],distances[row],logdets[row])
+                  for row,position in enumerate(positions)}
+        for position,request in enumerate(chunk):
             source,kind,state,existence,_,pd,_=request
+            projection=projected[position]
+            if projection is None:
+                output.append(_invisible_factor(source,kind,state,existence,detections))
+                continue
             mu,H,R,S,mass=projection
+            residual,distance,logdet=computed[position]
             output.append(_affine_result(source,kind,state,existence,detections,pd,gate,
                 mu,H,R,S,mass,residual,distance,logdet))
     return tuple(output)

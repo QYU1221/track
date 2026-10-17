@@ -32,7 +32,7 @@ from .candidates import retire_candidates
 from .online_factors import affine_factors_many
 from .undetected import prepare,observe
 
-MODEL_VERSION='v2.1-factorized-joint-ppp-3'
+MODEL_VERSION='v2.1-factorized-joint-ppp-4'
 APPROXIMATION='FINITE_GATES; BOUNDED_LOCAL_JOINT_HISTORIES; GAUSSIAN_PPP_MERGE; AFFINE_SENSOR; MISS_STATE_RETENTION; CONFIGURED_BACKGROUND_VIEW_DORMANCY_AND_RETIREMENT'
 
 
@@ -182,7 +182,8 @@ class FactorizedJointTracker:
             for source,f in star_factors.items() if ('S',source) not in parent)
         controller.check(nodes=len(parent))
         updated=[];audits=[];prior_loss=0.;birth_loss=0.;log_evidence=[]
-        search_summary=dict(groups=0,evaluated=0,retained=0,
+        search_summary=dict(groups=0,evaluated=0,retained=0,association_discarded_mass_sum=0.,
+            association_discarded_mass_max=0.,
             omitted_mass_status='LOCAL_TRUNCATION_AND_FINITE_GATES; FULL_SEQUENCE_ERROR_UNKNOWN')
         for component in sorted(components.values(),key=repr):
             controller.check()
@@ -212,11 +213,17 @@ class FactorizedJointTracker:
                 tables.append(FactorTable(hid,prior.weight,tuple(d.key for d in ds),tuple(fs),
                     tuple(math.log(k) if k else -math.inf for k in kappas)))
             policy=GraphInferencePolicy(policy_config,controller,ds,gate_geometry,detail=detail)
+            # Target factors were already finitely gated before graph building.
+            # Exhausting this graph cannot bound the omitted original likelihood.
+            policy.complete=False
             result=infer_factors(tuple(tables),policy)
             if detail=='full':audits.append(policy.audit)
             search_summary['groups']+=1
             search_summary['evaluated']+=policy.audit['evaluated_candidates']
             search_summary['retained']+=policy.audit['retained_candidates']
+            omitted=policy.audit['discarded_mass_within_evaluated_candidates']
+            search_summary['association_discarded_mass_sum']+=omitted
+            search_summary['association_discarded_mass_max']=max(search_summary['association_discarded_mass_max'],omitted)
             log_evidence.append(result.log_predictive_evidence)
             lookup={h.hypothesis_id:h for h in priors};conditional={s.reference:s.existence for s in result.conditional_states}
             output=[]
@@ -264,7 +271,8 @@ class FactorizedJointTracker:
             output=tuple(replace(h,weight=h.weight/den) for h in output)
             updated.append((output,tuple(priors),tuple(source_diag)))
         return self._finish(frame,detections,accepted,updated,remaining,start,controller,
-            dict(**(dict(group_audits=audits) if detail=='full' else dict(group_search_summary=search_summary)),
+            dict(**(dict(group_audits=audits) if detail=='full' else {}),group_search_summary=search_summary,
+                truncation_mass_scope='STAGE_CONDITIONAL; GROUP_SUMS_ARE_NOT_GLOBAL_POSTERIOR_ERROR_BOUNDS',
                 prior_product_discarded_mass_sum=prior_loss,birth_branch_discarded_mass_sum=birth_loss,
                 log_predictive_set_density=sum(log_evidence)+isolated_star_log_miss-r.clutter.expected_count-detected_population,
                 first_detection_intensity=tuple((key,values) for key,values in intensities.items())),

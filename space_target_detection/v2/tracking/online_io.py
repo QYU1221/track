@@ -43,7 +43,8 @@ def run_online_sequence(packet,raw,output_path,resume_path=None,checkpoint_path=
     for d in packet.detections:by_frame[d.frame].append(d)
     rows=[];failed=None;start=time.perf_counter();cpu=time.process_time();events=[]
     with (folder/'observation_provenance.jsonl').open('w',encoding='utf-8') as ledger, \
-            (folder/'background_retirement_events.jsonl').open('w',encoding='utf-8') as background_ledger:
+            (folder/'background_retirement_events.jsonl').open('w',encoding='utf-8') as background_ledger, \
+            (folder/'inference_audit.jsonl').open('w',encoding='utf-8') as audit_ledger:
         for frame in frames:
             frame_started=time.perf_counter()
             try:result=tracker.step(frame,tuple(by_frame[frame.frame]),detail=raw['reporting']['detail'])
@@ -58,6 +59,7 @@ def run_online_sequence(packet,raw,output_path,resume_path=None,checkpoint_path=
             ledger.write(json.dumps(serializable(dict(frame=frame.frame,groups=provenance)),allow_nan=False)+'\n')
             result['observation_provenance_reference']='observation_provenance.jsonl#frame='+str(frame.frame)
             payload=serializable(result)
+            audit_ledger.write(json.dumps(dict(frame=frame.frame,**payload['inference_audit']),allow_nan=False)+'\n')
             for event in payload['background_retirement_events']:
                 background_ledger.write(json.dumps(event,allow_nan=False)+'\n')
             if raw['reporting']['write_frame_json']:
@@ -78,7 +80,7 @@ def run_online_sequence(packet,raw,output_path,resume_path=None,checkpoint_path=
         retired_background_count=tracker.background_retired_count,dormant_background_count=len(tracker.dormant_background_ids),
         background_retirement_audit='background_retirement_events.jsonl',
         identity_scope='PERSISTENT_RETAINED_LABELS; ARCHIVE_REIDENTIFICATION_NOT_IMPLEMENTED',
-        inference_audit='incremental observation_provenance.jsonl; optional per-frame JSON',
+        inference_audit='inference_audit.jsonl; observation_provenance.jsonl; optional per-frame JSON',
         frame_json_written=raw['reporting']['write_frame_json'],
         performance_quantiles_s={str(p):float(np.percentile([r['Computation_Time_s'] for r in rows],p)) for p in (50,95,99)} if rows else {},
         public_input_sha256={name:hashlib.sha256((Path(public_input_path)/name).read_bytes()).hexdigest() for name in ('frames.csv','detections.csv','catalog.csv','input_metadata.json')},
