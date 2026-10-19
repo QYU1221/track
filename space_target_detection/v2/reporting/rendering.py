@@ -49,17 +49,19 @@ def draw_track_path(canvas, track, points, frames=None, sources=None,
             for fraction in (0.0, 0.4, 0.8):
                 a = tuple((start + fraction * (end-start)).astype(int))
                 b = tuple((start + min(fraction+0.2, 1.0) * (end-start)).astype(int))
-                cv2.line(canvas, a, b, color, 1)
+                cv2.line(canvas, a, b, tuple(int(c * .45) for c in color), 1)
         else:
             cv2.line(canvas, tuple(prev_pt), tuple(curr_pt), color, 2)
 
-    last_index = next(
-        (i for i in range(len(points) - 1, -1, -1)
-         if points[i] is not None), None)
-    if last_index is None:
+    # An absent current position must not relabel an old point as current.
+    if points[-1] is None:
         return
+    last_index = len(points) - 1
     cx, cy = points[last_index]
-    is_exited = getattr(track, 'status', None) == 'exited'
+    predicted = bool(sources and last_index < len(sources) and sources[last_index] == 'predicted')
+    if predicted:
+        color = tuple(int(c * .45) for c in color)
+    is_exited = getattr(track, 'status', None) in ('RETIRED','TERMINATED','NO_RETAINED_SUPPORT')
     if is_exited:
         cv2.circle(canvas, (cx, cy), 7, color, 2)
         prev_index = last_index - 1
@@ -73,9 +75,11 @@ def draw_track_path(canvas, track, points, frames=None, sources=None,
             cv2.arrowedLine(canvas, (cx, cy), (int(cx + dx), int(cy + dy)),
                             color, 2, tipLength=0.3)
     else:
-        cv2.circle(canvas, (cx, cy), 6, color, -1)
+        cv2.circle(canvas, (cx, cy), 6, color, 1 if predicted else -1)
     if show_ids:
         tag = "ID:%s" % track.id
+        if predicted:
+            tag += " P"
         if is_exited:
             tag += " X"
         cv2.putText(canvas, tag, (cx + 8, cy - 6),

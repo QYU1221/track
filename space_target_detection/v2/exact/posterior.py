@@ -9,12 +9,14 @@ import numpy as np
 from ..numerical_policy import BASIS_EPS_MULTIPLIER
 from .contracts import Association, FactorTable, InferenceError
 from .numerics import log_probability
+from .existence import log_absence
 
 
 @dataclass(frozen=True)
 class ConditionalExistence:
     reference: str
     existence: float
+    log_existence: float
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,7 @@ def joint_log_weight(table: FactorTable, association: Association) -> float:
         if detection_index is None:
             terms.append(source_log_miss_factor(source))
         else:
-            terms.append(log_probability(source.existence_prior) + source.log_eta[detection_index])
+            terms.append(source.log_existence_prior + source.log_eta[detection_index])
     terms.extend(table.log_kappa[index] for index in association.clutter_indices)
     if any(np.isneginf(value) for value in terms):
         return -np.inf
@@ -67,8 +69,8 @@ def source_log_miss_given_exists(source) -> float:
 
 def source_log_miss_factor(source) -> float:
     return float(np.logaddexp(
-        log_probability(1 - source.existence_prior),
-        log_probability(source.existence_prior) + source_log_miss_given_exists(source)))
+        log_absence(source.log_existence_prior),
+        source.log_existence_prior + source_log_miss_given_exists(source)))
 
 
 def normalize_log_weights(log_weights: tuple) -> tuple:
@@ -92,17 +94,14 @@ def _conditional_existence(table: FactorTable, source, detection_index) -> Condi
     reference = 'STATE:' + hashlib.sha256(json.dumps(
         (table.parent_id, source.source_id, key), separators=(',', ':')).encode()).hexdigest()
     if detection_index is not None:
-        return ConditionalExistence(reference, 1.)
+        return ConditionalExistence(reference, 1., 0.)
     log_denominator = source_log_miss_factor(source)
     if np.isneginf(log_denominator):
         raise InferenceError('IMPOSSIBLE_CONDITION', 'zero-weight miss has no conditional posterior')
-    log_existence = (log_probability(source.existence_prior) +
+    log_existence = (source.log_existence_prior +
                      source_log_miss_given_exists(source) - log_denominator)
     existence = float(np.exp(log_existence))
-    if existence == 0 and np.isfinite(log_existence):
-        raise InferenceError('PROBABILITY_UNDERFLOW',
-                             'positive conditional existence cannot be stored as zero')
-    return ConditionalExistence(reference, existence)
+    return ConditionalExistence(reference, existence, log_existence)
 
 
 def infer_factors(tables: tuple, computation_policy) -> InferenceResult:

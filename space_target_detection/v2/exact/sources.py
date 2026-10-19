@@ -22,9 +22,10 @@ def project_direction_pixel(mean: tuple,plane,frame: FrameInfo,camera: CameraMod
     R = quaternion_matrix(frame.quaternion_xyzw) if rotation is None else rotation
     b = R.T @ u
     pixel = camera.camera_to_pixel(b)
-    image = -b[:2]/b[2]
+    axes_inverse = camera.image_to_camera_rotation[:2,:2].T
+    image = axes_inverse @ (b[:2]/b[2])
     _,J_D = camera.distort(image)
-    J_image_body = np.array([[-1/b[2],0.,b[0]/b[2]**2],[0.,-1/b[2],b[1]/b[2]**2]])
+    J_image_body = axes_inverse @ np.array([[1/b[2],0.,-b[0]/b[2]**2],[0.,1/b[2],-b[1]/b[2]**2]])
     H_pos = camera.K[:2,:2] @ J_D @ J_image_body @ R.T @ J_inverse
     return pixel,H_pos
 
@@ -102,13 +103,15 @@ class VisibleStarProjector:
                 body[index]=row/np.linalg.norm(row)
         front = body[:,2] > UNIT_VECTOR_EPS_MULTIPLIER*np.finfo(float).eps
         indices = np.flatnonzero(front)
+        axes_inverse = camera.image_to_camera_rotation[:2,:2].T
         with np.errstate(over='ignore',invalid='ignore',divide='ignore'):
-            image = -body[indices,:2]/body[indices,2:3]
+            image = np.asarray([axes_inverse @ (body[index,:2]/body[index,2])
+                                for index in indices]).reshape(-1,2)
         intrinsic = camera.K
         pixels=np.empty((len(indices),2));radius=np.empty(len(indices))
-        for position,index in enumerate(indices):
-            pixels[position]=intrinsic[:2,:2] @ image[index]+intrinsic[:2,2]
-            radius[position]=np.linalg.norm(image[index])
+        for position,coordinates in enumerate(image):
+            pixels[position]=intrinsic[:2,:2] @ coordinates+intrinsic[:2,2]
+            radius[position]=np.linalg.norm(coordinates)
         x0,x1,y0,y1 = window.bounds_px
         keep = (np.isfinite(pixels).all(axis=1) &
                 (radius<=camera.max_normalized_radius) &

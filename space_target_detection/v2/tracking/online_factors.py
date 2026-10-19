@@ -38,6 +38,9 @@ def _inertial_geometry(mean,plane):
 
 
 def affine_factors(source_id,kind,state,existence,plane,frame,camera,window,detections,pd,R,gate,*,rotation=None,miss_update_mode='retain'):
+    if state is None:
+        if existence!=0:raise ValueError('positive existence requires a conditional state')
+        return _invisible_factor(source_id,kind,state,existence,detections)
     try:
         mu,H,R,S,mass=_affine_projection(state,plane,frame,camera,window,R,rotation)
     except GeometryError as error:
@@ -98,7 +101,11 @@ def affine_factors_many(requests,frame,camera,window,detections,gate,*,rotation=
         chunk=requests[start:start+128]
         projected=[]
         for request in chunk:
-            _,_,state,_,plane,_,R=request
+            _,_,state,existence,plane,_,R=request
+            if state is None:
+                if existence!=0:raise ValueError('positive existence requires a conditional state')
+                projected.append(None)
+                continue
             try:
                 projected.append(_affine_projection(state,plane,frame,camera,window,R,rotation))
             except GeometryError as error:

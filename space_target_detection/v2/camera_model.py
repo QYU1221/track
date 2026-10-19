@@ -1,11 +1,12 @@
 """Pinhole intrinsics and five-coefficient Brown distortion, geometry1.0.
 
-Normalized image axes follow positive pixel axes. Camera rays have the opposite
-X/Y signs, preserving the repository's declared camera_-X_-Y convention.
+Normalized image axes follow positive pixel axes. The camera_-X_-Y ray is
+rotated about +Z by camera_axis_rotation_deg into the attitude's camera frame.
 Distortion is applied in normalized image coordinates before K. Its inverse
 Jacobian is computed by the implicit function theorem, not ignored.
 """
 from dataclasses import dataclass
+import math
 from typing import Iterable, Tuple
 from .numerical_policy import BASIS_EPS_MULTIPLIER, UNIT_VECTOR_EPS_MULTIPLIER
 import numpy as np
@@ -25,6 +26,7 @@ class CameraModel:
     max_iterations: int
     calibration_version: str
     calibration_status: str
+    camera_axis_rotation_deg: float
 
     def __post_init__(self):
         object.__setattr__(self, 'distortion_coefficients', tuple(self.distortion_coefficients))
@@ -40,6 +42,24 @@ class CameraModel:
             raise ValueError('max_iterations must be a positive integer')
         if not self.calibration_version or self.calibration_status not in ('unverified','reported','synthetic_test_value','calibrated'):
             raise ValueError('declare calibration version and status')
+        if (isinstance(self.camera_axis_rotation_deg, bool)
+                or not isinstance(self.camera_axis_rotation_deg, (int, float))
+                or not math.isfinite(self.camera_axis_rotation_deg)):
+            raise ValueError('camera_axis_rotation_deg must be a finite angle in degrees')
+
+    @property
+    def image_to_camera_rotation(self) -> np.ndarray:
+        """Map (normalized pixel x, pixel y, 1) into the quaternion frame.
+
+        Positive angles use a right-handed rotation about the optical +Z axis.
+        Zero preserves (-x,-y,1); -90 degrees gives (-y,x,1).
+        """
+        angle = self.camera_axis_rotation_deg % 360.0
+        if angle % 90.0 == 0:
+            cosine, sine = ((1., 0.), (0., 1.), (-1., 0.), (0., -1.))[int(angle / 90)]
+        else:
+            cosine, sine = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+        return np.array([[-cosine, sine, 0.], [-sine, -cosine, 0.], [0., 0., 1.]])
 
     @property
     def K(self) -> np.ndarray:
@@ -124,11 +144,12 @@ class CameraModel:
     def pixel_to_camera(self, pixel: Iterable[float]) -> dict:
         """Normalized image (2,), camera LOS (3,), dLOS/dpixel (3,2)."""
         p, J_image, iterations = self.undistort_pixel(pixel)
-        a = np.array([-p[0],-p[1],1.])
+        rotation = self.image_to_camera_rotation
+        a = rotation @ np.array([p[0],p[1],1.])
         norm = np.linalg.norm(a)
         b = a/norm
         J_normalize = (np.eye(3)-np.outer(b,b))/norm
-        J = J_normalize @ np.array([[-1.,0.],[0.,-1.],[0.,0.]]) @ J_image
+        J = J_normalize @ rotation[:,:2] @ J_image
         return {'normalized_image':p, 'corrected_pixel':self.K[:2,:2] @ p+self.K[:2,2],
                 'camera_los':b, 'jacobian_camera_pixel':J, 'inverse_iterations':iterations}
 
@@ -137,5 +158,6 @@ class CameraModel:
         b = unit(direction)
         if b[2] <= UNIT_VECTOR_EPS_MULTIPLIER*np.finfo(float).eps:
             raise GeometryError('camera_singularity', 'camera ray is rear-facing or at projection singularity')
-        image, _ = self.distort(-b[:2]/b[2])
+        normalized = self.image_to_camera_rotation[:2,:2].T @ (b[:2]/b[2])
+        image, _ = self.distort(normalized)
         return finite(self.K[:2,:2] @ image+self.K[:2,2], 'projected pixel')

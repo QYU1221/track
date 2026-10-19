@@ -1,6 +1,7 @@
 """One resolver for online user parameters and complete effective snapshots.
 
-The shipped default.json is the only source of online engineering defaults.
+The shipped default.json plus the camera profile it selects (profiles/cameras/<camera_profile>.json)
+is the only source of online engineering defaults.
 Runtime configuration dataclasses validate values but do not supply fallbacks.
 """
 from copy import deepcopy
@@ -9,6 +10,23 @@ import math
 from pathlib import Path
 
 DEFAULT_PATH = Path(__file__).with_name('profiles') / 'default.json'
+CAMERA_DIR = DEFAULT_PATH.parent / 'cameras'
+
+
+def available_camera_profiles():
+    return tuple(sorted(path.stem for path in CAMERA_DIR.glob('*.json')))
+
+
+def _apply_camera_profile(defaults, name):
+    """Overlay the selected camera profile on the shipped defaults."""
+    path = CAMERA_DIR / (str(name) + '.json')
+    if not isinstance(name, str) or not name or path.parent != CAMERA_DIR or not path.is_file():
+        raise ValueError('unknown camera_profile %r; available: %s' % (name, ', '.join(available_camera_profiles())))
+    profile = json.loads(path.read_text(encoding='utf-8'))
+    if set(profile) != {'input_metadata', 'calibration'} or set(profile['input_metadata']) != {'attitude_direction', 'camera'}:
+        raise ValueError('camera profile must contain exactly input_metadata.{attitude_direction,camera} and calibration: ' + path.name)
+    defaults['input_metadata'].update(profile['input_metadata'])
+    defaults['calibration'] = profile['calibration']
 
 
 def _validate_default_completeness(defaults):
@@ -43,6 +61,7 @@ def resolve_configuration(raw):
     if not isinstance(raw, dict):
         raise ValueError('configuration must be a JSON object')
     defaults = json.loads(DEFAULT_PATH.read_text(encoding='utf-8'))
+    _apply_camera_profile(defaults, raw.get('camera_profile', defaults['camera_profile']))
     _validate_default_completeness(defaults)
     if raw.get('tracker_engine', defaults['tracker_engine']) != 'factorized_joint_ppp':
         raise ValueError('only factorized_joint_ppp is supported by this runtime')
@@ -63,7 +82,7 @@ def resolve_configuration(raw):
         if derived:
             raise ValueError('parameters derived from input belong only in a bound snapshot: ' + ', '.join(sorted(derived)))
     else:
-        missing = {'initial_timestamp_s', 'stars'} - set(raw)
+        missing = {'initial_timestamp_s', 'stars', 'bound_input'} - set(raw)
         if not isinstance(raw.get('clutter'), dict) or 'bounds_px' not in raw['clutter']:
             missing.add('clutter.bounds_px')
         if missing:
@@ -103,10 +122,9 @@ def resolve_configuration(raw):
     angle = result['geometry']['max_tangent_angle_deg']
     if isinstance(angle, bool) or not math.isfinite(angle) or not 0 < angle < 90:
         raise ValueError('geometry.max_tangent_angle_deg must lie between 0 and 90')
-    limit = result['lifecycle']['max_dormant_tracks_per_group']
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-        raise ValueError('positive integer max_dormant_tracks_per_group required')
     reporting = result['reporting']
+    if reporting['table_format'] not in ('compact', 'x_legacy'):
+        raise ValueError('reporting.table_format must be compact or x_legacy')
     if reporting['detail'] not in ('compact', 'full') or not isinstance(reporting['write_frame_json'], bool):
         raise ValueError('invalid reporting detail or write_frame_json')
     if reporting['track_frame_png_mode'] not in ('every', 'interval', 'off'):

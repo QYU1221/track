@@ -56,15 +56,12 @@ def process_sequence(input_path, output_dir=None, end_frame=None,
             raise ValueError('V2 input must be a public input folder or CSV/XLSX table')
         if metadata_path is not None:
             normalization_config = load_normalize_config(metadata_path)
-        elif 'input_metadata' in raw:
+        else:
             from ..v2.data_io import NormalizeConfig
             from ..v2.contracts import Camera
             data = dict(raw['input_metadata'])
             data['camera'] = Camera(**data['camera'])
             normalization_config = NormalizeConfig(**data)
-        else:
-            raise ValueError('原始 CSV/XLSX 需要 --metadata / metadata_path 指定相机和时间元数据，'
-                             '或在先验 JSON 中声明 input_metadata')
         from dataclasses import asdict
         raw['input_metadata'] = asdict(normalization_config)
         if verbose:

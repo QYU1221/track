@@ -166,14 +166,15 @@ def _plot_time_colored_path(axis, samples, line_collection_cls):
     axis.autoscale()
 
 
-def _save_angular_overview(output_dir, formal_tracks):
+def _save_angular_overview(output_dir, formal_tracks, observed_only=False):
     plt, line_collection_cls = _load_pyplot()
     columns = min(2, len(formal_tracks))
     rows = int(math.ceil(len(formal_tracks) / float(columns)))
     figure, axes = plt.subplots(
         rows, columns, figsize=(8.0 * columns, 5.2 * rows), squeeze=False)
     figure.suptitle(
-        'Formal trajectory angular overview '
+        ('Confirmed tracks: reliable observations only ' if observed_only else
+         'Confirmed tracks: observations and supported predicted states ')+
         '(green: start, red: end, color: time, '
         'orange x: predicted)', fontsize=17)
 
@@ -183,8 +184,9 @@ def _save_angular_overview(output_dir, formal_tracks):
         n_predicted = sum(
             item['source'] == 'predicted' for item in samples)
         axis.set_title(
-            'T%06d | %d points (%d predicted) | %.1f s' %
-            (int(getattr(track, 'id', 0)), len(samples), n_predicted, duration),
+            'T%06d | %d observed, %d predicted | %.1f s | %s' %
+            (int(getattr(track, 'id', 0)), len(samples)-n_predicted, n_predicted, duration,
+             getattr(track, 'status', 'UNKNOWN')),
             fontsize=14)
         axis.set_xlabel('Eastward offset (arcmin)')
         axis.set_ylabel('Northward offset (arcmin)')
@@ -193,7 +195,8 @@ def _save_angular_overview(output_dir, formal_tracks):
     for axis in axes.flat[len(formal_tracks):]:
         axis.set_visible(False)
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
-    path = os.path.join(output_dir, 'formal_trajectory_angular_overview.png')
+    path = os.path.join(output_dir, 'observed_trajectory_angular_overview.png' if observed_only
+                        else 'formal_trajectory_angular_overview.png')
     figure.savefig(path, dpi=formal_track_plot_dpi, bbox_inches='tight')
     plt.close(figure)
     return path
@@ -373,6 +376,11 @@ def save_formal_track_plots(run_dir, tracks):
         plt.close(figure)
         return [path]
     paths = [_save_angular_overview(output_dir, formal)]
+    observed = [(track, [s for s in samples if s['source'] in OBSERVED_SOURCES])
+                for track, samples in formal]
+    observed = [(track, samples) for track, samples in observed if samples]
+    if observed:
+        paths.append(_save_angular_overview(output_dir, observed, observed_only=True))
     for track, samples in formal:
         path = _save_track_diagnostics(output_dir, track, samples)
         if path is not None:

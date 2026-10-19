@@ -18,17 +18,23 @@ def project_track_marginals(histories, frame, confirmation_config, *, detail='fu
             else:associations[key]=associations.get(key,0.)+history.weight
             if track.support_keys:
                 support+=history.weight*track.existence
-                if track.existence>0 and history.weight>0:
+                if track.log_existence > -math.inf and history.weight>0:
                     first=min(k[0] for k in track.support_keys)
                     first_support=first if first_support is None else min(first_support,first)
                 start=frame.frame-confirmation_config.confirmation_window_frames+1
                 if len({k[0] for k in track.support_keys if start<=k[0]<=frame.frame})>=confirmation_config.confirmation_min_frames:
                     confirmation+=history.weight*track.existence
-            if track.existence>0:components.append((history.hypothesis_id,history.weight*track.existence,track.state))
-        existence=math.fsum(w for _,w,_ in components)
-        moments=mixture_moments(tuple(w for _,w,_ in components),tuple(s for _,_,s in components))
+            if track.log_existence > -math.inf and history.weight>0:
+                components.append((history.hypothesis_id,math.log(history.weight)+track.log_existence,track.state))
+        maximum=max((w for _,w,_ in components),default=-math.inf)
+        scaled=tuple(math.exp(w-maximum) for _,w,_ in components)
+        total=math.fsum(scaled)
+        log_existence=maximum+math.log(total) if total else -math.inf
+        existence=math.exp(log_existence)
+        normalized=tuple(w/total for w in scaled)
+        moments=mixture_moments(normalized,tuple(s for _,_,s in components))
         rows.append({'Track_Label':label,'Frame':frame.frame,'Timestamp':frame.timestamp_s,
-            'Existence_Probability':existence,'State_Mean':moments.mean if moments else None,
+            'Existence_Probability':existence,'Log_Existence_Probability':log_existence,'State_Mean':moments.mean if moments else None,
             'State_Covariance':moments.covariance if moments else None,
             'Tangent_Reference_ID':template.plane.reference_id,'Tangent_Plane':template.plane,
             'Detection_Association_Probabilities':tuple(sorted(associations.items())),
@@ -42,6 +48,6 @@ def project_track_marginals(histories, frame, confirmation_config, *, detail='fu
             'Measured_Or_Predicted':'Measured_Update_Mixture' if associations else 'Predicted_Only',
             'Approximation_Status':'CONTINUOUS_APPROXIMATE; JOINT HISTORIES RETAINED'})
         if detail=='full':
-            rows[-1]['Conditional_Hypothesis_Metadata']=tuple({'hypothesis_id':i,'existence_weight':w} for i,w,_ in components)
-            rows[-1]['State_Mixture']=tuple({'hypothesis_id':i,'weight':w/existence,'state':s} for i,w,s in components) if existence>0 else ()
+            rows[-1]['Conditional_Hypothesis_Metadata']=tuple({'hypothesis_id':i,'existence_weight':math.exp(w),'log_existence_weight':w} for i,w,_ in components)
+            rows[-1]['State_Mixture']=tuple({'hypothesis_id':i,'weight':w,'state':s} for (i,_,s),w in zip(components,normalized))
     return tuple(rows)

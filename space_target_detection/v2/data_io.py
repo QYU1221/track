@@ -3,7 +3,8 @@
 The inference loader opens only frames.csv, detections.csv, catalog.csv and
 input_metadata.json. It never opens a truth file or the simulation manifest.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
@@ -21,6 +22,7 @@ DEFAULT_MAPPING = {
     'Detection_ID': ('Detection_ID',), 'x': ('x', 'Image_X_px', 'Pixel_X'),
     'y': ('y', 'Image_Y_px', 'Pixel_Y'), 'Sigma_X': ('Sigma_X',),
     'Sigma_Y': ('Sigma_Y',), 'Cov_XY': ('Cov_XY',),
+    'Valid': ('Valid',), 'Invalid_Reason': ('Invalid_Reason',),
     'Attitude_Valid': ('Attitude_Valid',), 'Input_Available': ('Input_Available',),
     'q1': ('q1',), 'q2': ('q2',), 'q3': ('q3',), 'q4_scalar': ('q4_scalar',),
     **{name: (name,) for name in FEATURES},
@@ -87,9 +89,10 @@ def read_table(path: Union[str, Path], max_rows: int) -> Tuple[tuple, List[Dict[
     return header, records
 
 
-def write_csv(path: Union[str, Path], fields: tuple, rows: List[dict]) -> None:
-    with Path(path).open('w', encoding='utf-8', newline='') as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
+def write_csv(path: Union[str, Path], fields, rows, *,
+              encoding='utf-8', extrasaction='raise') -> None:
+    with Path(path).open('w', encoding=encoding, newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction=extrasaction)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -136,8 +139,8 @@ class NormalizeConfig:
     attitude_direction: str
 
     def __post_init__(self):
-        if not isinstance(self.time_scale, str) or not self.time_scale.strip() or self.timestamp_unit not in ('s', 'ms', 'ns'):
-            raise ValueError('declare time scale and timestamp unit s/ms/ns')
+        if not isinstance(self.time_scale, str) or not self.time_scale.strip() or self.timestamp_unit not in ('s', 'ms', 'ns', 'iso'):
+            raise ValueError('declare time scale and timestamp unit s/ms/ns/iso')
         if self.frame_period_s is not None and (isinstance(self.frame_period_s, bool) or not np.isfinite(self.frame_period_s) or self.frame_period_s <= 0):
             raise ValueError('explicit frame period must be positive seconds')
         if (self.bounds_action not in ('reject', 'mark_invalid') or isinstance(self.max_rows, bool)
@@ -178,21 +181,41 @@ def mapped_rows(header: tuple, rows: List[dict], config: NormalizeConfig,
     return [{canonical: row[source] for canonical, source in mapping.items()} for row in rows]
 
 
-def frame_from_row(row: Mapping[str, Any], config: NormalizeConfig) -> FrameInfo:
+def timestamp_seconds(value: Any, unit: str) -> Optional[float]:
+    """ISO timestamps require a timezone and become UTC Unix seconds."""
+    if value is None or str(value).strip() == '':
+        return None
+    if unit != 'iso':
+        return number(value, 'Timestamp') * {'s': 1., 'ms': .001, 'ns': 1e-9}[unit]
+    text = str(value).strip()
+    if 'T' not in text and ' ' not in text:
+        raise ValueError('ISO Timestamp requires a date, time and timezone')
+    try:
+        instant = datetime.fromisoformat(text[:-1]+'+00:00' if text.endswith('Z') else text)
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError('ISO Timestamp requires an explicit timezone')
+        result = instant.timestamp()
+    except (ValueError, OverflowError, OSError) as error:
+        raise ValueError('invalid timezone-aware ISO Timestamp: %r' % value) from error
+    return number(result, 'Timestamp')
+
+
+def frame_from_row(row: Mapping[str, Any], config: NormalizeConfig, *, canonical_quaternion: bool = False) -> FrameInfo:
     frame = parse_frame(row.get('Frame'))
-    timestamp = number(row.get('Timestamp'), 'Timestamp', required=False)
+    timestamp = timestamp_seconds(row.get('Timestamp'), config.timestamp_unit)
     if timestamp is None:
         if config.frame_period_s is None:
             raise ValueError('Timestamp missing: supply an explicit frame_period_s metadata assumption')
         timestamp = config.timestamp_zero_s + (frame-config.frame_zero)*config.frame_period_s
-    else:
-        timestamp *= {'s': 1., 'ms': 0.001, 'ns': 1e-9}[config.timestamp_unit]
     available = flag(row.get('Input_Available'), 'Input_Available', default=True)
     valid = flag(row.get('Attitude_Valid'), 'Attitude_Valid', default=False)
     quaternion = None
     if valid:
-        quaternion = adapt_quaternion(tuple(number(row.get(k), k) for k in ('q1', 'q2', 'q3', 'q4_scalar')),
-                                      order='xyzw', direction=config.attitude_direction)
+        values=tuple(number(row.get(k), k) for k in ('q1', 'q2', 'q3', 'q4_scalar'))
+        # Public packets already contain canonical unit quaternions. Validate
+        # them in FrameInfo without another rounding-changing normalization.
+        quaternion = values if canonical_quaternion else adapt_quaternion(values,
+            order='xyzw', direction=config.attitude_direction)
     return FrameInfo(frame, timestamp, available, valid, quaternion)
 
 
@@ -232,6 +255,18 @@ def detection_from_row(row: Mapping[str, Any], camera: Camera, bounds_action: st
                      valid=valid and declared_valid, invalid_reason=reason)
 
 
+def _has_iso_timestamps(rows: List[dict]) -> bool:
+    for row in rows:
+        value = row.get('Timestamp')
+        if value is None or isinstance(value, (bool, int, float)) or str(value).strip() == '':
+            continue
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def normalize_table(path: Union[str, Path], config: NormalizeConfig,
                      frames_path: Optional[Union[str, Path]] = None) -> Tuple[ObservationPacket, dict]:
     """Return a packet and diagnostics; no discovered truth or adjacent files.
@@ -241,6 +276,9 @@ def normalize_table(path: Union[str, Path], config: NormalizeConfig,
     """
     header, original = read_table(path, config.max_rows)
     rows = mapped_rows(header, original, config)
+    if config.timestamp_unit != 'iso' and _has_iso_timestamps(rows):
+        # Timestamps are timezone-aware ISO text, which cannot be numeric s/ms/ns.
+        config = replace(config, timestamp_unit='iso')
     frame_map = {}
     if frames_path is not None:
         frame_header, frame_rows = read_table(frames_path, config.max_rows)
@@ -263,9 +301,12 @@ def normalize_table(path: Union[str, Path], config: NormalizeConfig,
             if frame not in frame_map:
                 raise ValueError('detection Frame absent from frames sidecar')
             info = frame_map[frame]
-            if number(row.get('Timestamp'), 'Timestamp', required=False) is not None:
+            if timestamp_seconds(row.get('Timestamp'), config.timestamp_unit) is not None:
                 if frame_from_row({**row, 'Attitude_Valid': 0}, config).timestamp_s != info.timestamp_s:
                     raise ValueError('timestamp conflicts with frames sidecar')
+            if row.get('Input_Available') not in (None, ''):
+                if flag(row['Input_Available'], 'Input_Available') != info.input_available:
+                    raise ValueError('input availability conflicts with frames sidecar')
             if row.get('Attitude_Valid') not in (None, ''):
                 if flag(row['Attitude_Valid'], 'Attitude_Valid') != info.attitude_valid:
                     raise ValueError('attitude validity conflicts with frames sidecar')
@@ -274,7 +315,9 @@ def normalize_table(path: Union[str, Path], config: NormalizeConfig,
                     raise ValueError('quaternion conflicts with frames sidecar')
     packet = ObservationPacket(config.camera, config.time_scale,
                                tuple(frame_map[k] for k in sorted(frame_map)), detections)
-    return packet, {'original_rows': len(original), 'invalid_bounds': sum(not d.valid for d in detections),
+    return packet, {'original_rows': len(original),
+                    'invalid_bounds': sum(not config.camera.contains((d.x_px,d.y_px)) for d in detections),
+                    'invalid_detections': sum(not d.valid for d in detections),
                     'covariance_missing': sum(d.covariance_px2 is None for d in detections),
                     'frames_without_detections_unknown': frames_path is None,
                     'frame_period_s_assumption': config.frame_period_s}
@@ -328,7 +371,8 @@ def load_packet(folder: Union[str, Path], *, max_rows: int) -> ObservationPacket
         timestamp_unit='s', frame_period_s=None, frame_zero=0,
         timestamp_zero_s=0., bounds_action='mark_invalid', column_mapping={},
         max_rows=max_rows, attitude_direction='camera_to_j2000')
-    infos = tuple(frame_from_row({**row, 'Timestamp': row.get('Timestamp_s')}, config) for row in frames)
+    infos = tuple(frame_from_row({**row, 'Timestamp': row.get('Timestamp_s')}, config,
+        canonical_quaternion=True) for row in frames)
     header, detections = read_table(folder/'detections.csv', max_rows)
     mapped_rows(header, [], config)  # Also reject any hidden truth columns.
     points = tuple(detection_from_row(row, camera, 'mark_invalid', row['Covariance_Status']) for row in detections)

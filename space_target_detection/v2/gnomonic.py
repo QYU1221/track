@@ -1,7 +1,7 @@
 """Fixed gnomonic observation coordinates; dimensionless ratios, geometry1.0."""
 from dataclasses import dataclass
 from typing import Iterable, Tuple
-from .numerical_policy import BASIS_EPS_MULTIPLIER
+from .numerical_policy import BASIS_EPS_MULTIPLIER, UNIT_VECTOR_EPS_MULTIPLIER
 import numpy as np
 from .contracts import finite
 from .geometry import unit
@@ -19,7 +19,12 @@ class GnomonicPlane:
     def __post_init__(self):
         if not isinstance(self.reference_id,str) or not self.reference_id.strip():
             raise ValueError('tangent reference ID must be nonempty')
-        c = unit(self.center)
+        center=finite(self.center,'tangent center')
+        # Preserve a canonical plane exactly across checkpoint reconstruction.
+        # Re-normalizing an already-unit vector can change its last bits and
+        # rotate the restored coordinate system relative to its saved states.
+        c=(center if center.shape==(3,) and np.isclose(center @ center,1.,rtol=0,
+            atol=UNIT_VECTOR_EPS_MULTIPLIER*np.finfo(float).eps) else unit(center))
         finite(self.max_angle_rad, 'tangent angular domain')
         if not 0 < self.max_angle_rad < np.pi/2:
             raise ValueError('tangent domain must be in (0,pi/2) radians')

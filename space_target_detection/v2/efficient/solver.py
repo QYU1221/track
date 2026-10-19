@@ -137,7 +137,7 @@ class GraphInferencePolicy:
         hit_scores={}
         for s,source in sources.items():
             miss_scores[s]=source_log_miss_factor(source)
-            log_r=math.log(source.existence_prior) if source.existence_prior else -math.inf
+            log_r=source.log_existence_prior
             hit_scores[s]=tuple(log_r+v for v in source.log_eta)
         clutter_scores=table.log_kappa
         def score(items,indices=None):

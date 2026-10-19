@@ -19,8 +19,11 @@ class InferenceConfig:
     max_memory_bytes: int
     max_frame_seconds: float
     association_top_k: int = None
+    preserve_target_associations: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.preserve_target_associations, bool):
+            raise ValueError('preserve_target_associations must be boolean')
         if self.association_top_k is not None and (isinstance(self.association_top_k,bool) or
                 not isinstance(self.association_top_k,int) or self.association_top_k<self.top_k):
             raise ValueError('association_top_k must be null or an integer >= top_k')

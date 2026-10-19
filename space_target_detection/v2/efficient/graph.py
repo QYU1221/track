@@ -73,7 +73,7 @@ class AssociationGraphBuilder:
                 if distances is not None and distances[j]>threshold:
                     # Restrict association hypotheses, NOT redefine sensor PD or miss.
                     # Omitted observations remain in the full set and compete elsewhere.
-                    reason='FINITE_GATE_POSSIBLE_NONZERO' if s.existence_prior>0 else 'ZERO_DENSITY_GATE'
+                    reason='FINITE_GATE_POSSIBLE_NONZERO' if s.log_existence_prior > -math.inf else 'ZERO_DENSITY_GATE'
                     # Compact output needs only whether a nonzero gated edge
                     # was omitted; detailed per-edge audit rows are optional.
                     if record_exclusions or reason=='FINITE_GATE_POSSIBLE_NONZERO' and not excluded:

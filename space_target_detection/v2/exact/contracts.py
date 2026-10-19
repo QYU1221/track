@@ -5,6 +5,7 @@ gnomonic ratios / ratio per second; state projection is locally linearized.
 """
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from .existence import checked_log_existence
 from ..numerical_policy import PROBABILITY_EPS_MULTIPLIER
 import numpy as np
 from ..contracts import checked_covariance,finite
@@ -113,12 +114,14 @@ class SourceFactors:
     log_eta: tuple  # log integral(PD*g*p); one per canonical detection key
     pixel_model: Optional[AffinePixelModel] = None
     log_miss_given_exists: Optional[float] = None
+    log_existence_prior: Optional[float] = None
 
     def __post_init__(self):
         identifier(self.source_id,'source ID')
         if self.kind not in ('T','S_K','S_U'):
             raise ValueError('source kind must be T, S_K or S_U')
         probability(self.existence_prior,'existence prior')
+        object.__setattr__(self,'log_existence_prior',checked_log_existence(self.existence_prior,self.log_existence_prior))
         probability(self.pd_bar,'PD_bar')
         if self.kind=='S_K' and self.existence_prior!=1:
             raise ValueError('known stars have certain existence')

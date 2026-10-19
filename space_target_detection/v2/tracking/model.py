@@ -1,6 +1,7 @@
 """Immutable online joint-history state and fixed-plane CV prediction."""
 from dataclasses import dataclass,replace
 from typing import Optional
+from ..exact.existence import checked_log_existence
 import numpy as np
 from ..contracts import finite
 from ..gnomonic import GnomonicPlane
@@ -45,11 +46,13 @@ class Track:
     state: Optional[GaussianState]
     plane: GnomonicPlane
     support_keys: tuple = ()
+    log_existence: Optional[float] = None
 
     def __post_init__(self):
         identifier(self.label,'track label')
         probability(self.existence,'existence')
-        if (self.state is None)!=(self.existence==0):
+        object.__setattr__(self,'log_existence',checked_log_existence(self.existence,self.log_existence))
+        if (self.state is None)!=(self.log_existence == -np.inf):
             raise ValueError('state density is defined iff existence is positive')
         object.__setattr__(self,'support_keys',tuple(tuple(k) for k in self.support_keys))
         if len(set(self.support_keys))!=len(self.support_keys):
@@ -107,8 +110,9 @@ class TrackingConfig:
 
 
 def predict_track(track: Track,dt: float,config: TrackingConfig) -> Track:
-    ps = config.survival_probability**(dt/config.survival_reference_dt_s) if dt>0 else 1.
-    r = track.existence*ps if dt>0 else track.existence
-    if dt>0 and track.existence>0 and config.survival_probability>0 and r==0:
-        raise InferenceError('PROBABILITY_UNDERFLOW','positive survival/existence is not representable; no physical-death substitution')
-    return replace(track,existence=r,state=predict_gaussian(track.state,dt,config.q_a) if r>0 else None)
+    log_r = track.log_existence
+    if dt>0:
+        log_r += (dt/config.survival_reference_dt_s)*checked_log_existence(config.survival_probability)
+    r = float(np.exp(log_r))
+    return replace(track,existence=r,log_existence=log_r,
+                   state=predict_gaussian(track.state,dt,config.q_a) if log_r > -np.inf else None)

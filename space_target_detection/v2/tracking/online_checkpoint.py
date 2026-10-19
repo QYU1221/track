@@ -12,25 +12,20 @@ from .lifecycle import ManagementState
 from .candidates import RetiredCandidate
 from .undetected import Population
 from .factorized import Group,MODEL_VERSION
+from .input_evidence import validate_consumed_input
 
-SCHEMA='factorized-joint-populations-3'
+SCHEMA='factorized-joint-populations-4'
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(serializable(value),sort_keys=True,allow_nan=False).encode()).hexdigest()
 
 
-def binding(tracker,*,legacy_background_policy=False):
+def binding(tracker):
     from ..numerical_policy import snapshot
     r=tracker.reference
-    background=r.background_config
-    version=MODEL_VERSION
-    if legacy_background_policy:
-        background={k:v for k,v in serializable(background).items() if k in
-                    ('persistence_probability','p_detection','measurement_covariance_px2','parameter_provenance')}
-        version='v2.1-factorized-joint-ppp-2'
-    return digest(dict(version=version,camera=r.camera,catalog=r.catalog,stars=r.stars,clutter=r.clutter,
-        tracking=r.config,background=background,lifecycle=r.lifecycle_config,inference=r.inference_config,
+    return digest(dict(version=MODEL_VERSION,camera=r.camera,catalog=r.catalog,stars=r.stars,clutter=r.clutter,
+        tracking=r.config,background=r.background_config,lifecycle=r.lifecycle_config,inference=r.inference_config,
         population=tracker.options,time_scale=r.time_scale,initial_time=r.initial_timestamp_s,
         max_tangent_angle_rad=tracker.max_tangent_angle_rad,numerical_policy=snapshot()))
 
@@ -38,22 +33,28 @@ def binding(tracker,*,legacy_background_policy=False):
 def save(tracker,path):
     path=Path(path)
     if path.exists():raise FileExistsError('checkpoint is immutable; choose a new path')
+    validate_consumed_input(tracker.consumed_frame_ids,tracker.input_evidence_sha256,
+        tracker.reference.input_frame_digests,last_frame=tracker.frame,version=tracker.version)
     snapshot=dict(frame=tracker.frame,timestamp_s=tracker.timestamp_s,version=tracker.version,groups=tracker.groups,
         populations=tracker.populations,management=tracker.management,retired=tracker.retired,
-        dormant_background_ids=tracker.dormant_background_ids,background_retired_count=tracker.background_retired_count)
+        dormant_background_ids=tracker.dormant_background_ids,background_retired_count=tracker.background_retired_count,
+        consumed_frame_ids=tracker.consumed_frame_ids,input_evidence_sha256=tracker.input_evidence_sha256,
+        segment_events=tracker.segment_events)
     raw=dict(schema=SCHEMA,model_digest=binding(tracker),snapshot=serializable(snapshot),snapshot_sha256=digest(snapshot))
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(raw,allow_nan=False),encoding='utf-8')
 
 
-def restore(tracker,path,*,migrate_legacy_background_policy=False):
+def restore(tracker,path):
     if tracker.frame is not None:raise ValueError('restore only into a fresh tracker')
     raw=json.loads(Path(path).read_text(encoding='utf-8'))
-    legacy=migrate_legacy_background_policy and raw['schema']=='factorized-joint-populations-2'
-    if (raw['schema']!=SCHEMA and not legacy) or raw['model_digest']!=binding(tracker,legacy_background_policy=legacy):
-        raise ValueError('checkpoint model mismatch')
+    if raw['schema']!=SCHEMA:
+        raise ValueError('checkpoint schema mismatch; rerun the original input with this code version')
+    if raw['model_digest']!=binding(tracker):raise ValueError('checkpoint model mismatch')
     data=raw['snapshot']
     if raw['snapshot_sha256']!=digest(data):raise ValueError('checkpoint integrity mismatch')
+    validate_consumed_input(data['consumed_frame_ids'],data['input_evidence_sha256'],
+        tracker.reference.input_frame_digests,last_frame=data['frame'],version=data['version'])
     def obj(v,star=False):
         v=dict(v);v['plane']=GnomonicPlane(**v['plane'])
         v['state']=(GaussianDirection if star else GaussianState)(**v['state']) if v['state'] else None
@@ -100,3 +101,5 @@ def restore(tracker,path,*,migrate_legacy_background_policy=False):
     tracker.groups=tuple(groups);tracker.populations=tuple(populations);tracker.management=management;tracker.retired=tuple(retired)
     tracker.frame=data['frame'];tracker.timestamp_s=data['timestamp_s'];tracker.version=data['version']
     tracker.dormant_background_ids=dormant;tracker.background_retired_count=count
+    tracker.consumed_frame_ids=tuple(data['consumed_frame_ids']);tracker.input_evidence_sha256=data['input_evidence_sha256']
+    tracker.segment_events=tuple(data.get('segment_events',()))

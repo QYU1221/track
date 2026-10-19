@@ -1,7 +1,9 @@
 {
   "profile_id": "default-v2-online",
   "tracker_engine": "factorized_joint_ppp",
+  "camera_profile": "2048",
   "reporting": {
+    "table_format": "compact",
     "detail": "compact",
     "write_frame_json": false,
     "track_frame_png_mode": "every",
@@ -22,7 +24,7 @@
     "miss_update_mode": "retain",
     "survival_probability": 0.998,
     "survival_reference_dt_s": 0.1,
-    "q_a": 3.753049352598986e-05,
+    "q_a": 1e-07,
     "p_detection": 0.9,
     "measurement_covariance_px2": [
       [
@@ -34,7 +36,7 @@
         2.0
       ]
     ],
-    "parameter_provenance": "default-v1; sensor/R/PD/survival inherited from the reference parameter set; CV acceleration spectrum matches the reference velocity process variance at the nominal 0.1s plot period, not the reference full diagonal Q; UNCALIBRATED",
+    "parameter_provenance": "default-v2; sensor/R/PD/survival inherited from the reference parameter set; CV acceleration spectrum q_a set to 1e-7, 3-30x above the innovation-likelihood optima (3e-9..3e-8) of formal tracks in segments 01 and 09 (2 s frames), leaving margin for manoeuvres; selection-biased toward smooth tracks; UNCALIBRATED",
     "max_dt_s": 15.0
   },
   "clutter": {
@@ -68,19 +70,19 @@
     "dormant_after_s": 2.0,
     "reliable_association_probability": 0.7,
     "outside_visibility_probability": 0.01,
+    "outside_fov_stop_s": 4.0,
     "candidate_existence_probability": 0.5,
     "confirmed_existence_probability": 0.95,
     "rejection_existence_probability": 0.05,
     "enable_dormancy": true,
     "confirmation_min_frames": 4,
     "confirmation_window_frames": 8,
-    "candidate_deadline_frames": 24,
+    "candidate_deadline_s": 48.0,
     "candidate_low_probability": 0.1,
-    "candidate_low_frames": 6,
+    "candidate_low_s": 10.0,
     "enable_candidate_pruning": true,
-    "policy_version": "lifecycle8.1-low-existence-retirement",
-    "decision_calibration": "UNCALIBRATED_DECISION_COST",
-    "max_dormant_tracks_per_group": 8
+    "policy_version": "lifecycle9.0-identity-and-fov-exit",
+    "decision_calibration": "UNCALIBRATED_DECISION_COST"
   },
   "inference": {
     "association_top_k": null,
@@ -93,7 +95,8 @@
     "max_candidates": 32,
     "max_search_states": 200000,
     "max_memory_bytes": 2147483648,
-    "max_frame_seconds": 60.0
+    "max_frame_seconds": 60.0,
+    "preserve_target_associations": false
   },
   "input_metadata": {
     "timestamp_unit": "s",
@@ -102,15 +105,6 @@
     "timestamp_zero_s": 0.0,
     "bounds_action": "mark_invalid",
     "max_rows": 1000000,
-    "attitude_direction": "camera_to_j2000",
-    "camera": {
-      "width": 2048,
-      "height": 2048,
-      "fx_px": 7300.0,
-      "fy_px": 7300.0,
-      "cx_px": 1024.0,
-      "cy_px": 1024.0
-    },
     "time_scale": "UNVERIFIED_SECONDS_FROM_NOMINAL_PLOT_PERIOD",
     "column_mapping": {}
   },
@@ -118,22 +112,6 @@
     "schema": "population-bootstrap-2",
     "star_detection_probability": 0.9,
     "birth_scope": "undetected target and uncatalogued-star Poisson populations; every valid frame may produce first-detection candidates in the same source update; no fixed finite birth cohort"
-  },
-  "calibration": {
-    "skew_px": 0.0,
-    "distortion_model": "none",
-    "distortion_coefficients": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0
-    ],
-    "max_normalized_radius": 2.0,
-    "inverse_tolerance_px": 1e-09,
-    "max_iterations": 30,
-    "calibration_version": "repository_configuration_unverified",
-    "calibration_status": "unverified"
   },
   "geometry": {
     "max_tangent_angle_deg": 80.0

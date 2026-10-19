@@ -30,10 +30,12 @@ from .marginals import project_track_marginals
 from .lifecycle import TrackLifecycleManager,canonical_id
 from .candidates import retire_candidates
 from .online_factors import affine_factors_many
+from .hypothesis_selection import select_joint_histories
 from .undetected import prepare,observe
+from .input_evidence import EMPTY_DIGEST,extend_digest,frame_digest
 
-MODEL_VERSION='v2.1-factorized-joint-ppp-5'
-APPROXIMATION='FINITE_GATES; BOUNDED_LOCAL_JOINT_HISTORIES; GAUSSIAN_PPP_MERGE; AFFINE_SENSOR; CONFIGURED_TARGET_MISS_GAUSSIAN_PROJECTION; BACKGROUND_MISS_STATE_RETENTION; CONFIGURED_BACKGROUND_VIEW_DORMANCY_AND_RETIREMENT'
+MODEL_VERSION='v2.1-factorized-joint-ppp-8'
+APPROXIMATION='FINITE_GATES; BOUNDED_LOCAL_JOINT_HISTORIES; GAUSSIAN_PPP_MERGE; NONLINEAR_BIRTH_QUADRATURE; AFFINE_PPP_WINDOW_THINNING; AFFINE_EXISTING_SOURCE_SENSOR; CONFIGURED_TARGET_MISS_GAUSSIAN_PROJECTION; BACKGROUND_MISS_STATE_RETENTION; CONFIGURED_BACKGROUND_VIEW_DORMANCY_AND_RETIREMENT'
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,8 @@ class FactorizedJointTracker:
         self._background_view_index=BackgroundViewIndex()
         self.dormant_background_ids=()
         self.background_retired_count=0
+        self.consumed_frame_ids=();self.input_evidence_sha256=EMPTY_DIGEST
+        self.segment_events=()
 
     def step(self,frame,detections,*,detail='full'):
         start=time.perf_counter();r=self.reference
@@ -113,8 +117,10 @@ class FactorizedJointTracker:
         dormant=[]
         for group_index,group in enumerate(self.groups):
             if group_index not in active_groups:
-                dormant.append(Group(tuple(replace(h,backgrounds=tuple(predict_background(b,dt,r.background_config) for b in h.backgrounds),
-                    target_assignments=(),star_assignments=(),background_assignments=(),clutter_keys=()) for h in group.histories)))
+                histories=tuple(replace(h,backgrounds=tuple(value for b in h.backgrounds
+                    for value in (predict_background(b,dt,r.background_config),) if value.log_existence > -math.inf),
+                    target_assignments=(),star_assignments=(),background_assignments=(),clutter_keys=()) for h in group.histories)
+                if any(h.backgrounds for h in histories):dormant.append(Group(histories))
                 continue
             hs=[]
             for h in group.histories:
@@ -124,7 +130,7 @@ class FactorizedJointTracker:
         if not frame.inertial_observation_available:
             return self._commit_prediction(frame,detections,predicted,populations,start,controller,detail)
         remaining,intensities,birth_states,detected_population=observe(populations,frame,r.camera,r.clutter,accepted,config,r.background_config,rotation=rotation)
-        factors={};states={};geometry_info={};state_factor_cache={};requests={}
+        factors={};states={};requests={}
         factor_objects=[];seen=set()
         for histories in predicted:
             for h in histories:
@@ -142,9 +148,9 @@ class FactorizedJointTracker:
         state_factor_cache=dict(zip(requests,values))
         for kind,obj in factor_objects:
             source=kind+':'+(obj.label if kind=='T' else obj.background_id)
-            f,s,g=state_factor_cache[(source,obj.state,obj.plane)]
-            if f.existence_prior!=obj.existence:f=replace(f,existence_prior=obj.existence)
-            factors[(kind,obj)]=f;states[(kind,obj)]=s;geometry_info[(kind,obj)]=g
+            f,s,_=state_factor_cache[(source,obj.state,obj.plane)]
+            f=replace(f,existence_prior=obj.existence,log_existence_prior=obj.log_existence)
+            factors[(kind,obj)]=f;states[(kind,obj)]=s
         star_sources=self._star_projector.sources(r.stars,r.catalog,frame,r.camera,r.clutter.window)
         star_factors={s.source_id:s for s in build_known_star_factors(star_sources,accepted)}
         # Union graph over every conditional state. Existing dependencies in
@@ -181,7 +187,7 @@ class FactorizedJointTracker:
             (math.log1p(-f.pd_bar) if f.pd_bar<1 else -math.inf)
             for source,f in star_factors.items() if ('S',source) not in parent)
         controller.check(nodes=len(parent))
-        updated=[];audits=[];prior_loss=0.;birth_loss=0.;log_evidence=[]
+        updated=[];audits=[];prior_loss=0.;birth_loss=0.;log_evidence=[];selection_audits=[]
         search_summary=dict(groups=0,evaluated=0,retained=0,association_discarded_mass_sum=0.,
             association_discarded_mass_max=0.,
             evaluated_joint_discarded_mass_sum=0.,evaluated_joint_discarded_mass_max=0.,
@@ -205,8 +211,11 @@ class FactorizedJointTracker:
                     for obj in objects:
                         f=factors[(kind,obj)];fs.append(replace(f,log_eta=tuple(f.log_eta[j] for j in indices)))
                         conditionals[(hid,f.source_id)]=states[(kind,obj)]
-                        gate_geometry[hid][f.source_id]=geometry_info[(kind,obj)]
-                        source_diag.append(dict(parent_id=hid,source_id=f.source_id,pd_bar=f.pd_bar,visibility_mass_cubature=f.pd_bar/(config.p_detection or 1)))
+                        # These factors are already gated. Only known-star
+                        # sources below need geometry for graph-stage gating.
+                        pd=config.p_detection if kind=='T' else r.background_config.p_detection
+                        source_diag.append(dict(parent_id=hid,source_id=f.source_id,pd_bar=f.pd_bar,
+                            visibility_mass_cubature=f.pd_bar/pd if pd>0 else None))
                 for s in known:
                     f=star_factors[s];fs.append(replace(f,log_eta=tuple(f.log_eta[j] for j in indices)))
                     gate_geometry[hid][s]=(f.pixel_model.mean_px,f.pixel_model.noise_px2)
@@ -226,19 +235,32 @@ class FactorizedJointTracker:
             search_summary['association_discarded_mass_sum']+=omitted
             search_summary['association_discarded_mass_max']=max(search_summary['association_discarded_mass_max'],omitted)
             log_evidence.append(result.log_predictive_evidence)
-            lookup={h.hypothesis_id:h for h in priors};conditional={s.reference:s.existence for s in result.conditional_states}
-            output=[]
+            lookup={h.hypothesis_id:h for h in priors};conditional={s.reference:s for s in result.conditional_states}
+            output=[];association_support={d.key:{} for d in ds}
             for h in result.hypotheses:
                 controller.check()
                 if not math.isfinite(h.log_unnormalized_weight):continue
                 before=lookup[h.parent_hypothesis_id];assign=dict(h.target_assignments+h.unknown_star_assignments);refs=dict(h.conditional_state_references)
+                # Preserve evidence for an association before birth variants
+                # compete for the joint-history budget. Omitting a birth class
+                # must not turn a 0.35 association into a reliable 1.0 display.
+                support_weight=h.posterior_weight*(1-omitted)
+                for source,key in h.target_assignments:
+                    if key is not None:
+                        beta=association_support[key]
+                        beta[source]=beta.get(source,0.)+support_weight
+                for key in h.clutter_detection_keys:
+                    total=r.clutter.expected_count/r.clutter.window.area+sum(intensities[key].values())
+                    source='T:N:'+str(key[0])+':'+str(len(key[1]))+':'+key[1]
+                    beta=association_support[key]
+                    beta[source]=beta.get(source,0.)+support_weight*intensities[key].get('T',0.)/total
                 tracks=[];backgrounds=[]
                 for kind,objects in (('T',before.tracks),('S_U',before.backgrounds)):
                     for obj in objects:
                         source=kind+':'+(obj.label if kind=='T' else obj.background_id)
-                        key=assign[source];existence=conditional[refs[source]]
-                        if existence==0:continue
-                        changes=dict(existence=existence,state=conditionals[(before.hypothesis_id,source)][key],
+                        key=assign[source];posterior=conditional[refs[source]]
+                        if posterior.log_existence == -math.inf:continue
+                        changes=dict(existence=posterior.existence,log_existence=posterior.log_existence,state=conditionals[(before.hypothesis_id,source)][key],
                             support_keys=obj.support_keys+((key,) if key else ()))
                         if kind=='S_U':
                             pd_bar=factors[(kind,obj)].pd_bar
@@ -267,10 +289,17 @@ class FactorizedJointTracker:
                     identifier='J:'+identity((h.hypothesis_id,events))
                     output.append(JointHistory(identifier,h.posterior_weight*probability,tuple(ts),
                         tuple(ta),h.star_assignments,tuple(cl),backgrounds=tuple(bs),background_assignments=tuple(ba)))
-            output.sort(key=lambda h:(-h.weight,h.hypothesis_id))
-            birth_loss+=math.fsum(h.weight for h in output[policy_config.top_k:])
-            output=output[:policy_config.top_k];den=math.fsum(h.weight for h in output)
+            existing_targets={t.label for prior in priors for t in prior.tracks}
+            output,selection_loss=select_joint_histories(output,policy_config.top_k,
+                existing_targets,policy_config.preserve_target_associations)
+            birth_loss+=selection_loss
+            den=math.fsum(h.weight for h in output)
             joint_loss=max(0.,1-(1-omitted)*den)  # probability-domain roundoff only
+            selection_audits.append(dict(detection_keys=tuple(d.key for d in ds),
+                pre_birth_association_support=tuple((key,tuple(sorted(beta.items()))) for key,beta in association_support.items()),
+                retained_mass_within_evaluated=max(0.,1-joint_loss),
+                selection='EXISTING_TARGET_ASSOCIATION_DIVERSITY' if policy_config.preserve_target_associations else 'JOINT_TOP_K',
+                scope='CONDITIONAL_ON_EVALUATED_CANDIDATES; GATE_AND_BEAM_LOSS_UNKNOWN'))
             search_summary['evaluated_joint_discarded_mass_sum']+=joint_loss
             search_summary['evaluated_joint_discarded_mass_max']=max(search_summary['evaluated_joint_discarded_mass_max'],joint_loss)
             output=tuple(replace(h,weight=h.weight/den) for h in output)
@@ -281,6 +310,7 @@ class FactorizedJointTracker:
                 target_miss_update_mode=config.miss_update_mode,
                 association_top_k=policy_config.association_top_k or policy_config.top_k,
                 prior_product_discarded_mass_sum=prior_loss,birth_branch_discarded_mass_sum=birth_loss,
+                joint_selection=selection_audits,
                 log_predictive_set_density=sum(log_evidence)+isolated_star_log_miss-r.clutter.expected_count-detected_population,
                 first_detection_intensity=tuple((key,values) for key,values in intensities.items())),
             projected_star_count=len(star_factors),detail=detail,dormant=tuple(dormant))
@@ -294,6 +324,11 @@ class FactorizedJointTracker:
         groups=[];marginals=[];backgrounds=[];management=[];retired=[];events=[];provenance=[]
         old_records={v.label:v for v in self.management}
         background_events=[]
+        predicted_tracks={}
+        for _,priors,_ in updated:
+            for h in priors:
+                if h.weight>0:
+                    for track in h.tracks:predicted_tracks.setdefault(track.label,[]).append(track.log_existence > -math.inf)
         for hs,priors,diag in updated:
             rows=project_track_marginals(hs,frame,life,detail=detail)
             if frame.inertial_observation_available and r.config.miss_update_mode=='moment_matched':
@@ -306,6 +341,12 @@ class FactorizedJointTracker:
                 row.update(Track_Lifecycle=record.lifecycle,Track_Maturity=record.maturity,Canonical_Track_ID=canonical_id(record.label),
                     State_Version=self.version+1,Management_Reason=record.reason)
             feedback,records,removed=retire_candidates(hs,records,frame,life,self.version+1)
+            # Exact zero existence has no conditional state or future owner.
+            # This also applies on prediction-only frames.
+            feedback=tuple(replace(h,tracks=tuple(t for t in h.tracks if t.log_existence > -math.inf),
+                backgrounds=tuple(b for b in h.backgrounds if b.log_existence > -math.inf)) for h in feedback)
+            live_labels={t.label for h in feedback for t in h.tracks}
+            records=tuple(record for record in records if record.label in live_labels)
             feedback,bg_removed=retire_backgrounds(feedback,frame,r.background_config)
             background_events.extend(bg_removed)
             labels={v.label for v in removed}
@@ -321,8 +362,14 @@ class FactorizedJointTracker:
         retired_labels={v.label for v in retired}
         dropped=[v for v in self.management if v.label not in current and v.label not in retired_labels]
         for record in dropped:
-            events.append(dict(frame=frame.frame,timestamp_s=frame.timestamp_s,label=record.label,kind='POSTERIOR_TRUNCATION',
-                before=record.lifecycle,after='NO_RETAINED_SUPPORT',reason='LOCAL_JOINT_BRANCH_TRUNCATION; NOT_PHYSICAL_DEATH'))
+            zero=record.label in predicted_tracks and not any(predicted_tracks[record.label])
+            if zero and any(getattr(event,'label',None)==record.label and getattr(event,'after',None)=='TERMINATED' for event in events):
+                continue
+            events.append(dict(frame=frame.frame,timestamp_s=frame.timestamp_s,label=record.label,
+                kind='LIFECYCLE' if zero else 'POSTERIOR_TRUNCATION',before=record.lifecycle,
+                after='TERMINATED' if zero else 'NO_RETAINED_SUPPORT',
+                reason='ZERO_PHYSICAL_POSTERIOR' if zero else 'LOCAL_JOINT_BRANCH_TRUNCATION; NOT_PHYSICAL_DEATH',
+                state_version=self.version+1,existence_probability=record.last_existence_probability))
         points=[]
         probability_fields=('P_Known_Star','P_Unknown_Star','P_Existing_Target','P_Birth_Target','P_Clutter')
         point_sums={d.key:{name:[] for name in probability_fields} for d in accepted}
@@ -341,6 +388,10 @@ class FactorizedJointTracker:
                         beta[source]=beta.get(source,0.)+h.weight
                 for key in h.clutter_keys:
                     if key in point_sums:point_sums[key]['P_Clutter'].append(h.weight)
+        retained_mass={tuple(key):item['retained_mass_within_evaluated']
+                       for item in audit.get('joint_selection',()) for key in item['detection_keys']}
+        association_support={tuple(key):beta for item in audit.get('joint_selection',())
+                             for key,beta in item.get('pre_birth_association_support',())}
         for d in detections:
             valid=d.key in point_sums
             values=dict(P_Known_Star=None,P_Unknown_Star=None,P_Existing_Target=None,P_Birth_Target=None,P_Clutter=None)
@@ -351,7 +402,10 @@ class FactorizedJointTracker:
                 if abs(sum(values.values())-1)>POSTERIOR_NORMALIZATION_ATOL:raise InferenceError('POSTERIOR_NORMALIZATION','local five-source marginal')
             p=dict(Frame=frame.frame,Timestamp=frame.timestamp_s,Detection_ID=d.detection_id,Geometry_Valid=valid,
                 Model_Status=MODEL_VERSION,Inference_Mode='FACTORIZED_JOINT_PPP',Approximation_Status=APPROXIMATION,
-                Association_Marginals=tuple(sorted(beta.items())),**values)
+                Association_Marginals=tuple(sorted(beta.items())),
+                Association_Retained_Mass=retained_mass.get(d.key),
+                Association_PreTruncation_Support=association_support.get(d.key),
+                Association_Support_Scope='PRE_BIRTH_SUPPORT_WITHIN_EVALUATED_ASSOCIATIONS; GATE_AND_BEAM_LOSS_UNKNOWN',**values)
             points.append(p)
         geometry=()
         if frame.inertial_observation_available:
@@ -390,8 +444,10 @@ class FactorizedJointTracker:
             observation_provenance=tuple(provenance),state_version=self.version+1,
             identity_scope='PERSISTENT_LABELS_WITHIN_RETAINED_JOINT_BRANCHES; ARCHIVE_REIDENTIFICATION_NOT_IMPLEMENTED')
         # One atomic commit; every computation above uses frame-local state.
+        input_evidence=extend_digest(self.input_evidence_sha256,frame.frame,frame_digest(frame,detections))
         self.groups=tuple(groups);self.populations=tuple(populations);self.management=tuple(management)
         self.retired+=tuple(retired);self.frame=frame.frame;self.timestamp_s=frame.timestamp_s;self.version+=1
         self.dormant_background_ids=dormant_ids
         self.background_retired_count+=len(background_events)
+        self.consumed_frame_ids+=(frame.frame,);self.input_evidence_sha256=input_evidence
         return result

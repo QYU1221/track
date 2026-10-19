@@ -1,14 +1,17 @@
-"""Consecutive low-existence retirement for candidate and confirmed tracks."""
+"""Retirement of tracks that leave the field of view, decay, or miss their confirmation deadline."""
 from dataclasses import dataclass, replace
 from ..exact.contracts import probability
 
 
-def consecutive_low_run(previous, first, existence, frame, previous_frame, policy):
-    if first is None:
-        return 0  # No retained real support has established a candidate clock.
-    # Count evaluated consecutive frames; omitted frames cannot establish a run.
-    run=previous.low_probability_run if previous_frame is not None and frame.frame==previous_frame+1 else 0
-    return run+1 if existence<policy.candidate_low_probability else 0
+def low_existence_start(previous, first, existence, frame, previous_frame, policy):
+    """Time at which the current uninterrupted low-existence period began, or None."""
+    if first is None or existence>=policy.candidate_low_probability:
+        return None  # No retained real support has established a candidate clock, or existence recovered.
+    # Omitted frames cannot establish a consecutive low-existence period.
+    consecutive=previous_frame is not None and frame.frame==previous_frame+1
+    if consecutive and previous.low_since_time is not None:
+        return previous.low_since_time
+    return frame.timestamp_s
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,7 @@ class RetiredCandidate:
     management: object
     conditional_branches: tuple
     state_version: int
-    reason: str = 'CONSECUTIVE_LOW_EXISTENCE'
+    reason: str
     approximation: str = 'MARGINAL_PROJECTION; FUTURE_SOURCE_REMOVED; NOT_PHYSICAL_DEATH'
 
     def __post_init__(self):
@@ -32,19 +35,31 @@ class RetiredCandidate:
             raise ValueError('invalid retirement version/frame')
 
 
+def retirement_reason(record, frame, policy):
+    """Why a track leaves joint inference, or None while it is still maintained."""
+    if not policy.enable_candidate_pruning or record.first_real_support_frame is None:
+        return None
+    # Targets are assumed not to return after leaving the field of view.
+    if record.outside_since_time is not None and frame.timestamp_s-record.outside_since_time>=policy.outside_fov_stop_s:
+        return 'LEFT_FIELD_OF_VIEW'
+    if (record.last_existence_probability is not None and record.low_since_time is not None
+            and frame.timestamp_s-record.low_since_time>=policy.candidate_low_s):
+        return 'CONSECUTIVE_LOW_EXISTENCE'
+    if record.overdue_unconfirmed:
+        return 'CANDIDATE_DEADLINE'
+    return None
+
+
 def retire_candidates(histories, management, frame, policy, version):
-    """Archive low-existence tracks of either maturity without reweighting histories."""
-    eligible=tuple(r for r in management if policy.enable_candidate_pruning
-        and r.first_real_support_frame is not None
-        and r.last_existence_probability is not None
-        and r.last_existence_probability<policy.candidate_low_probability
-        and r.low_probability_run>=policy.candidate_low_frames)
+    """Archive tracks that must no longer be maintained, without reweighting histories."""
+    reasons={r.label:retirement_reason(r,frame,policy) for r in management}
+    eligible=tuple(r for r in management if reasons[r.label] is not None)
     if not eligible:
         return histories,management,()
     labels={r.label for r in eligible}
     retired=tuple(RetiredCandidate(r.label,frame.frame,frame.timestamp_s,r.last_existence_probability,r,
         tuple((h.hypothesis_id,h.weight,t) for h in histories for t in h.tracks if t.label==r.label),
-        version) for r in eligible)
+        version,reasons[r.label]) for r in eligible)
     # Assignments, claims, support provenance and environment counts describe
     # consumed observations, including those owned by the retired labels.
     feedback=tuple(replace(h,tracks=tuple(t for t in h.tracks if t.label not in labels)) for h in histories)

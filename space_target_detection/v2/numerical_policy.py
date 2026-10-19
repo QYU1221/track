@@ -3,7 +3,8 @@
 Changing these requires numerical regression, not a runtime JSON override.
 Multipliers below are applied to IEEE floating-point machine epsilon.
 """
-POLICY_VERSION = 'numerical-policy-2'
+POLICY_VERSION = 'numerical-policy-3'
+BIRTH_QUADRATURE_ORDER = 7
 SYMMETRY_EPS_MULTIPLIER = 32
 UNIT_VECTOR_EPS_MULTIPLIER = 64
 BASIS_EPS_MULTIPLIER = 128

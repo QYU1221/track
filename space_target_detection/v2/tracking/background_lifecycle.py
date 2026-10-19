@@ -73,7 +73,11 @@ def retire_backgrounds(histories,frame,config):
         parts=[(h.weight,b) for h in histories for b in h.backgrounds if b.background_id==identity]
         mass=math.fsum(w*b.existence for w,b in parts)
         mature_mass=math.fsum(w*b.existence for w,b in parts if b.visible_miss_count>=config.retirement_visible_misses)
-        if mass<config.retirement_existence_probability and mature_mass>0 and mature_mass>=config.retirement_mature_mass_fraction*mass:
+        logs=[(math.log(w)+b.log_existence,b) for w,b in parts if w>0 and b.log_existence > -math.inf]
+        maximum=max((value for value,_ in logs),default=-math.inf)
+        scaled=math.fsum(math.exp(value-maximum) for value,_ in logs)
+        mature_scaled=math.fsum(math.exp(value-maximum) for value,b in logs if b.visible_miss_count>=config.retirement_visible_misses)
+        if mass<config.retirement_existence_probability and mature_scaled>0 and mature_scaled>=config.retirement_mature_mass_fraction*scaled:
             removed.add(identity)
             events.append(dict(Background_ID=identity,frame=frame.frame,timestamp_s=frame.timestamp_s,
                 reason='LOW_MARGINAL_EXISTENCE_AFTER_VISIBLE_MISSES',discarded_existence_mass=mass,

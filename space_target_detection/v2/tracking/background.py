@@ -5,6 +5,7 @@ one opportunity. Coverage/identity assumptions are explicit prior metadata.
 """
 from dataclasses import dataclass,replace
 from typing import Optional
+from ..exact.existence import checked_log_existence
 import numpy as np
 from ..contracts import finite,checked_covariance
 from ..gnomonic import GnomonicPlane
@@ -32,11 +33,13 @@ class Background:
     plane: GnomonicPlane
     support_keys: tuple = ()
     visible_miss_count: int = 0
+    log_existence: Optional[float] = None
 
     def __post_init__(self):
         identifier(self.background_id,'Background_ID')
         probability(self.existence,'background existence')
-        if (self.state is None)!=(self.existence==0):
+        object.__setattr__(self,'log_existence',checked_log_existence(self.existence,self.log_existence))
+        if (self.state is None)!=(self.log_existence == -np.inf):
             raise ValueError('direction density defined iff positive existence')
         if self.state is not None and not isinstance(self.state,GaussianDirection):
             raise TypeError('background state must be GaussianDirection')
@@ -86,10 +89,11 @@ class BackgroundConfig:
 def predict_background(background: Background,dt: float,config: BackgroundConfig) -> Background:
     finite(dt,'background time interval')
     if dt<0: raise ValueError('negative background dt')
-    r = background.existence*config.persistence_probability if dt>0 else background.existence
+    log_r = background.log_existence + (checked_log_existence(config.persistence_probability) if dt>0 else 0.)
+    r = float(np.exp(log_r))
     # Q_S=0 is the only implemented physical direction model. No fake CV.
-    if r==background.existence:return background
-    return replace(background,existence=r,state=background.state if r>0 else None)
+    if log_r==background.log_existence:return background
+    return replace(background,existence=r,log_existence=log_r,state=background.state if log_r > -np.inf else None)
 
 
 def project_background(histories: tuple,frame,source_diagnostics: tuple,*,detail='full') -> tuple:
@@ -110,17 +114,23 @@ def project_background(histories: tuple,frame,source_diagnostics: tuple,*,detail
             else: associations[key] = associations.get(key,0.)+h.weight
             if b is None: continue
             template = b
-            if b.existence>0: parts.append((h.hypothesis_id,h.weight*b.existence,b.state))
+            if b.log_existence > -math.inf and h.weight>0:
+                parts.append((h.hypothesis_id,math.log(h.weight)+b.log_existence,b.state))
             if b.support_keys: last.append((h.hypothesis_id,b.support_keys[-1],h.weight*b.existence))
-        r = math.fsum(p[1] for p in parts)
-        moments = mixture_moments(tuple(p[1] for p in parts),tuple(p[2] for p in parts))
+        maximum=max((p[1] for p in parts),default=-math.inf)
+        scaled=tuple(math.exp(p[1]-maximum) for p in parts)
+        total=math.fsum(scaled)
+        log_r=maximum+math.log(total) if total else -math.inf
+        r=math.exp(log_r)
+        normalized=tuple(w/total for w in scaled)
+        moments = mixture_moments(normalized,tuple(p[2] for p in parts))
         direction,covariance = None,None
         if moments is not None:
             direction,J = template.plane.inverse(moments.mean)
             covariance = J @ np.asarray(moments.covariance) @ J.T
         visibility = tuple({'parent_id':d['parent_id'],'mass':d.get('visibility_mass_cubature')} for d in diagnostics.get('S_U:'+identity,()))
         rows.append({'Background_ID':identity,'Frame':frame.frame,'Timestamp':frame.timestamp_s,
-          'Existence_Probability':r,'J2000_Direction':tuple(direction) if direction is not None else None,
+          'Existence_Probability':r,'Log_Existence_Probability':log_r,'J2000_Direction':tuple(direction) if direction is not None else None,
           'Direction_Covariance':tuple(map(tuple,covariance)) if covariance is not None else None,
           'Direction_Covariance_Approximation':'Jacobian at mixture mean; rank-two LOS covariance',
           'Tangent_Reference':template.plane,'State_Mean':moments.mean if moments else None,
@@ -129,5 +139,5 @@ def project_background(histories: tuple,frame,source_diagnostics: tuple,*,detail
           'Miss_Association_Probability':miss,'Last_Valid_Observation':tuple(last),
           'Visibility':visibility,'Model_Status':'STATIC_INERTIAL_Q_ZERO; CONTINUOUS_APPROXIMATE',
           'Background_Hypothesis_Status':'Measurement_Supported' if last else 'Latent_Bernoulli'})
-        if detail=='full':rows[-1]['State_Mixture']=tuple({'hypothesis_id':i,'weight':w/r,'state':s} for i,w,s in parts if r>0)
+        if detail=='full':rows[-1]['State_Mixture']=tuple({'hypothesis_id':i,'weight':w,'state':s} for (i,_,s),w in zip(parts,normalized))
     return tuple(rows)
