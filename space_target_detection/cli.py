@@ -8,23 +8,47 @@ def scan_datasets(root):
     return tuple(path for path in sorted(folder.iterdir()) if path.is_file() and path.suffix.lower() in ('.csv','.xlsx')) if folder.is_dir() else ()
 
 
-def select_dataset_interactive(datasets):
-    print('\n可用数据集：')
-    for index,path in enumerate(datasets,1):print('  [%d] %s'%(index,path.name))
-    while True:
-        try:value=input('请输入编号，或粘贴 CSV/XLSX 路径: ').strip()
-        except (EOFError,KeyboardInterrupt):raise SystemExit(0)
-        direct=Path(value)
-        if direct.is_file() and direct.suffix.lower() in ('.csv','.xlsx'):return direct
-        if value.isdigit() and 1<=int(value)<=len(datasets):return datasets[int(value)-1]
-        print('请输入有效编号或文件路径。')
+def select_dataset_interactive(initial_dir):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as error:
+        raise RuntimeError('无法打开文件选择窗口，请使用 --input 指定数据文件路径。') from error
+
+    folder = Path(initial_dir)
+    if not folder.is_dir():
+        folder = Path.cwd()
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        selected = filedialog.askopenfilename(
+            parent=root,
+            title='选择 CSV/XLSX 数据文件',
+            initialdir=str(folder.resolve()),
+            filetypes=(
+                ('CSV / Excel 数据文件', '*.csv *.xlsx'),
+                ('CSV 文件', '*.csv'),
+                ('Excel 文件', '*.xlsx'),
+            ),
+        )
+    except tk.TclError as error:
+        raise RuntimeError('无法打开文件选择窗口，请使用 --input 指定数据文件路径。') from error
+    finally:
+        if root is not None:
+            root.destroy()
+
+    if not selected:
+        raise SystemExit(0)
+    return Path(selected)
 
 
 def main():
     parser=argparse.ArgumentParser(allow_abbrev=False,description='空间目标在线联合概率跟踪')
     parser.add_argument('--input','-i',help='CSV/XLSX 检测表或规范化输入目录')
     parser.add_argument('--dataset','-d',help='datasets 目录中的文件名')
-    parser.add_argument('--datasets-root',help='数据集目录')
+    parser.add_argument('--datasets-root',help='数据集目录，也是文件选择窗口的默认目录')
     parser.add_argument('--output','-o',help=r'输出目录；默认保存到 E:\实验数据\实验结果数据 下的时间戳子目录')
     parser.add_argument('--frames','-n',type=int,help='只处理前 N 帧')
     parser.add_argument('--quiet','-q',action='store_true',help='关闭终端进度')
@@ -46,8 +70,10 @@ def main():
     elif args.dataset:
         input_path=datasets_root/args.dataset
         if input_path not in datasets:parser.error('未找到数据集：'+args.dataset)
-    elif datasets:input_path=select_dataset_interactive(datasets)
-    else:parser.error('请使用 --input 指定 CSV/XLSX 或规范化输入目录')
+    else:
+        try:input_path=select_dataset_interactive(datasets_root)
+        except RuntimeError as error:parser.error(str(error))
+        if not args.quiet:print('已选择数据文件：'+str(input_path))
     if not input_path.exists() or not (input_path.is_dir() or input_path.suffix.lower() in ('.csv','.xlsx')):
         parser.error('输入必须是存在的 CSV/XLSX 或规范化输入目录：'+str(input_path))
     from .pipeline.sequence import process_sequence
