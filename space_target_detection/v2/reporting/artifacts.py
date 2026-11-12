@@ -24,12 +24,15 @@ from ..camera_model import CameraModel
 from ..geometry import quaternion_matrix
 from ..geometry_errors import GeometryError
 from ..gnomonic import GnomonicPlane
+from ..measurement_covariance import propagate_los_covariance
 from .schema import DETECTION_FIELDS, table_fields, table_row
 from ..data_io import write_csv
 from .rendering import COLOR_PALETTE, draw_track_path, save_image
 from .formal_track_plots import save_formal_track_plots
-from .identity import MIN_MEAN_TARGET_POSTERIOR, MIN_OBSERVED_POINTS, MAX_JUMP_FRACTION, is_target_identity
+from .identity import (MIN_MEAN_TARGET_POSTERIOR, MIN_OBSERVED_POINTS, MAX_JUMP_FRACTION,
+                       jump_threshold_squared, target_identity_diagnostics)
 from .progress import TerminalProgress
+from .star_classification import classify_star, STAR_CANDIDATE_SUPPORT, STAR_CONFIRMED_SUPPORT
 
 
 def _json(value):
@@ -38,10 +41,11 @@ def _json(value):
 
 # Presentation-only policy; it never feeds back into inference.
 DISPLAY_TARGET_MIN_POSTERIOR = 0.85
+DISPLAY_CLUTTER_MIN_POSTERIOR = 0.85  # Engineering default pending empirical calibration.
 
 
 def _classify(point):
-    """Display the unique largest source marginal; weak target winners are unknown."""
+    """Require evidence thresholds as well as a unique winning category."""
     sources = [point.get(name) for name in ('P_Existing_Target', 'P_Birth_Target',
                'P_Known_Star', 'P_Unknown_Star', 'P_Clutter')]
     if any(value is None for value in sources):
@@ -49,8 +53,12 @@ def _classify(point):
     values = [sources[0] + sources[1], sources[2] + sources[3], sources[4]]
     maximum = max(values)
     winners = [i for i, v in enumerate(values) if abs(v - maximum) <= DISPLAY_CLASS_TIE_ATOL]
-    if len(winners) != 1 or (winners[0] == 0 and values[0] < DISPLAY_TARGET_MIN_POSTERIOR):
+    if (len(winners) != 1
+            or (winners[0] == 0 and values[0] < DISPLAY_TARGET_MIN_POSTERIOR)
+            or (winners[0] == 2 and values[2] < DISPLAY_CLUTTER_MIN_POSTERIOR)):
         return '未知', values
+    if winners[0] == 1:
+        return classify_star(point)[0], values
     return ['目标', '恒星', '杂波'][winners[0]], values
 
 
@@ -105,8 +113,9 @@ class XStyleReporter:
         self.png_mode = png['track_frame_png_mode']
         self.png_interval = png['track_frame_png_interval']
         self.png_scale = png['track_frame_png_scale']
+        self.jump_false_alarm_probability = png['jump_false_alarm_probability']
         self.export_seconds = 0.
-        for name in ('track_frames', 'formal_tracks', 'debug'):
+        for name in ('track_frames', 'formal_tracks', 'debug', 'frame_results'):
             if name == 'track_frames' and self.png_mode == 'off':
                 continue
             (self.folder / name).mkdir(parents=True, exist_ok=True)
@@ -135,6 +144,30 @@ class XStyleReporter:
             return pixel, direction.tolist()
         except GeometryError:
             return None, None
+
+    def _jump_covariance(self, detection, frame, geometry):
+        """Use declared sensor precision without changing tracker R or raw data.
+
+        Prefer each detection's covariance; then an explicitly supplied report
+        covariance. The last resort is the tracker's existing R, visibly labelled
+        uncalibrated rather than presented as a calibrated measurement precision.
+        """
+        if detection.covariance_px2 is not None:
+            source = 'DETECTION:' + detection.covariance_status
+            if geometry.get('los_covariance') is not None:
+                return geometry['los_covariance'], source
+            covariance = detection.covariance_px2
+        else:
+            reporting = self.configuration['reporting']
+            covariance = reporting['jump_measurement_covariance_px2']
+            if covariance is not None:
+                source = 'REPORTING:' + reporting['jump_measurement_covariance_provenance']
+            else:
+                covariance = self.configuration['tracking']['measurement_covariance_px2']
+                source = 'TRACKING_MEASUREMENT_COVARIANCE:UNCALIBRATED_FALLBACK'
+        ray = self.camera.pixel_to_camera((detection.x_px, detection.y_px))
+        jacobian = quaternion_matrix(frame.quaternion_xyzw) @ ray['jacobian_camera_pixel']
+        return propagate_los_covariance(covariance, jacobian).tolist(), source
 
     def consume(self, result, *, frame_started=None):
         """Consume one JSON-safe committed frame without modifying it."""
@@ -190,6 +223,8 @@ class XStyleReporter:
                 detection, item, association = match
                 pixel = [detection.x_px, detection.y_px]
                 direction = geometry.get(detection.key, {}).get('j2000_los')
+                covariance, covariance_source = (self._jump_covariance(detection, frame,
+                    geometry.get(detection.key, {})) if direction is not None else (None, 'UNAVAILABLE'))
                 source = 'measured'
                 previous_measurement=track['last_measured_frame']
                 if previous_measurement is not None and number>previous_measurement+1:
@@ -202,6 +237,7 @@ class XStyleReporter:
             else:
                 pixel, direction = self._prediction(marginal, frame)
                 item, association, source = {}, None, 'predicted'
+                covariance, covariance_source = None, 'PREDICTED_NOT_TESTED'
             status = marginal['Track_Lifecycle']
             track['measured_frames'] += int(match is not None)
             row = dict(track_id=track['id'], track_label=label, frame=number,
@@ -218,7 +254,8 @@ class XStyleReporter:
                        canonical_track_id=marginal.get('Canonical_Track_ID'),
                        posterior_update_kind=marginal.get('Measured_Or_Predicted'),
                        miss_association_probability=marginal.get('Miss_Association_Probability'),
-                       _direction=direction)
+                       _direction=direction, _los_covariance=covariance,
+                       jump_covariance_source=covariance_source)
             if direction is not None:
                 row.update(ra_deg=math.degrees(math.atan2(direction[1], direction[0])),
                            dec_deg=math.degrees(math.asin(float(np.clip(direction[2], -1, 1)))))
@@ -242,6 +279,7 @@ class XStyleReporter:
                 track['last'].update(Track_Lifecycle='RETIRED', Management_Reason=event['reason'])
                 track.update(exit_frame=number,exit_reason=event['reason'])
         self.frames.append(self._frame_row(result, frame))
+        self._save_workbook(frame_number=number)
         self._save_frame(frame)
         self.export_seconds += time.perf_counter() - started
         self.progress.frame(frame, self.frames[-1], result,
@@ -250,6 +288,9 @@ class XStyleReporter:
 
     def _detection_row(self, detection, frame, point, geometry, label):
         group, probabilities = _classify(point)
+        star_decision = None
+        if probabilities[1] is not None and probabilities[1] > max(probabilities[0], probabilities[2]) + DISPLAY_CLASS_TIE_ATOL:
+            star_decision = classify_star(point)
         valid = point.get('Geometry_Valid') is True
         skip = '' if valid else (detection.invalid_reason if not detection.valid else
                 'invalid_attitude' if not frame.attitude_valid else 'not_in_observation_model')
@@ -265,14 +306,20 @@ class XStyleReporter:
                     Target_Posterior=probabilities[0], Star_Posterior=probabilities[1],
                     Clutter_Posterior=probabilities[2],
                     Existence_Probability=None,
-                    Decision_Reason='unique_maximum_source_posterior' if group != '未知' else
+                    Decision_Reason=star_decision[1] if star_decision else 'unique_maximum_source_posterior' if group != '未知' else
                     ('target_posterior_below_display_threshold' if probabilities[0] is not None
                      and probabilities[0] == max(probabilities) and probabilities[0] < DISPLAY_TARGET_MIN_POSTERIOR
+                     else 'clutter_posterior_below_display_threshold' if probabilities[2] is not None
+                     and probabilities[2] - max(probabilities[:2]) > DISPLAY_CLASS_TIE_ATOL
                      else 'unavailable_or_tied_source_posterior'),
                     Timestamp_s=frame.timestamp_s, Online_Canonical_ID=None,
                     Identity_Status='UNRESOLVED' if valid else 'UNAVAILABLE', Identity_Posterior=None,
                     Known_Star_Probability=point.get('P_Known_Star'),
                     Unknown_Star_Probability=point.get('P_Unknown_Star'),
+                    Star_Status=('CONFIRMED' if group == '恒星' else 'CANDIDATE' if group == '恒星候选' else 'UNRESOLVED'),
+                    Star_Source_ID=star_decision[2] if star_decision else None,
+                    Star_Evidence_Support=star_decision[3] if star_decision else None,
+                    Unknown_Star_Confirmation_Support=_json(point.get('Unknown_Star_Confirmation_Support', ())),
                     Existing_Target_Probability=point.get('P_Existing_Target'),
                     Birth_Target_Probability=point.get('P_Birth_Target'),
                     Association_Marginals=_json(point.get('Association_Marginals', ())),
@@ -417,7 +464,17 @@ class XStyleReporter:
             confirmed = track['formal_frame'] is not None
             # Identity is accumulated evidence; later existence decay or a
             # departure from the field of view does not revoke it.
-            final_formal = is_target_identity(confirmed, observed)
+            identity = target_identity_diagnostics(confirmed, observed,
+                false_alarm_probability=self.jump_false_alarm_probability)
+            jumps = identity['jumps']
+            checks = {r['frame']: r for r in jumps['checks']}
+            for row in observed:
+                check = checks.get(row['frame'])
+                if check is not None:
+                    row.update(jump_mahalanobis_squared=check['mahalanobis_squared'],
+                               jump_threshold_squared=jumps['threshold_squared'],
+                               jump_detected=int(check['jump']))
+            final_formal = identity['confirmed']
             track['final_formal'] = final_formal
             for row in rows:
                 row.update(observation_coverage=coverage, max_observation_gap=gap)
@@ -434,7 +491,11 @@ class XStyleReporter:
                         formal_exit_reason=track['exit_reason'] if confirmed else None,
                         terminal_reason=track['exit_reason'],
                         last_decision_reason=last.get('Management_Reason'),
-                        canonical_track_id=last.get('Canonical_Track_ID'))
+                        canonical_track_id=last.get('Canonical_Track_ID'),
+                        final_identity_reason=identity['reason'], jump_check_status=jumps['status'],
+                        jump_check_count=jumps['check_count'], jump_count=jumps['jump_count'],
+                        jump_fraction=jumps['jump_fraction'],
+                        jump_covariance_sources=_json(jumps['covariance_sources']))
             if observed:
                 for key in ('target_posterior', 'star_posterior', 'clutter_posterior', 'association_quality'):
                     item[key] = observed[-1].get(key)
@@ -482,7 +543,27 @@ class XStyleReporter:
                       table_format=self.table_format, model_version=summary['model_version'], reporting_elapsed_s=self.export_seconds,
                       report_scope='current committed chunk; unprocessed input rows are explicitly marked',
                       track_id_scope='numeric display ID for this export; track_label and canonical_track_id retain V2 identity',
-                      classification_rule='unique maximum source posterior; target winners need posterior >= %.2f; ties/unavailable are unknown; formal tracks need a confirmed identity with >= %d observed points, mean target posterior >= %.2f and at most %.0f%% constant-velocity jumps; later misses or leaving the field of view do not revoke it' % (DISPLAY_TARGET_MIN_POSTERIOR, MIN_OBSERVED_POINTS, MIN_MEAN_TARGET_POSTERIOR, MAX_JUMP_FRACTION*100),
+                      classification_rule='unique maximum category posterior; target winners need posterior >= %.2f; clutter winners need posterior >= %.2f; star winners require the separate star classification policy; ties/unavailable are unknown; formal target tracks need a confirmed identity with >= %d observed points, mean target posterior >= %.2f and at most %.0f%% covariance-normalized CV residual outliers; later misses or leaving the field of view do not revoke target identity' % (DISPLAY_TARGET_MIN_POSTERIOR, DISPLAY_CLUTTER_MIN_POSTERIOR, MIN_OBSERVED_POINTS, MIN_MEAN_TARGET_POSTERIOR, MAX_JUMP_FRACTION*100),
+                      jump_classification_policy=dict(
+                          method='THREE_OBSERVATION_CV_MAHALANOBIS_CHI_SQUARE_2',
+                          false_alarm_probability=self.jump_false_alarm_probability,
+                          threshold_squared=jump_threshold_squared(self.jump_false_alarm_probability),
+                          covariance_rule='S=R_next+(1+a)^2*R_current+a^2*R_previous; a=dt_next/dt_previous',
+                          covariance_priority='detection covariance; explicit reporting covariance; uncalibrated tracking R fallback',
+                          reporting_covariance_px2=self.configuration['reporting']['jump_measurement_covariance_px2'],
+                          reporting_covariance_provenance=self.configuration['reporting']['jump_measurement_covariance_provenance'],
+                          assumptions='independent Gaussian measurement errors; locally constant velocity; deterministic attitude',
+                          scope='single residual probability conditional on calibrated covariance; overlapping triples are correlated',
+                          max_jump_fraction=MAX_JUMP_FRACTION,
+                          fraction_calibration='UNCALIBRATED_ENGINEERING_QUALITY_RULE',
+                          missing_covariance='unavailable check cannot confirm identity'),
+                      star_classification_policy=dict(candidate_support=STAR_CANDIDATE_SUPPORT,
+                          confirmed_support=STAR_CONFIRMED_SUPPORT,
+                          known_star_evidence='unique catalog source association',
+                          unknown_star_evidence='joint current association and >=4 distinct measured frames within last 8 frame numbers',
+                          truncation_guard='posterior multiplied by retained evaluated mass; missing mass prevents confirmation',
+                          calibration='UNCALIBRATED_ENGINEERING_THRESHOLDS',
+                          error_scope='gate and heuristic search error remains unknown'),
                       final_class_scope='final display class within this export; not truth or smoothed identity',
                       reconnect_scope='reliable same-label recovery after a measurement gap; not archive reidentification',
                       unsupported_reference_scores=('blank; no replacement scores are manufactured'
@@ -490,7 +571,6 @@ class XStyleReporter:
                       reporting_source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                                                for p in sorted(Path(__file__).parent.glob('*.py'))},
                       figures=['tracks_overlay.png', 'tracks_observed_overlay.png', 'tracks_inertial_overlay.png'] + [str(Path(p).relative_to(self.folder)) for p in paths])
-        (self.folder/'run_summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
         self.progress.finish(summary, report)
         return report
 
@@ -499,7 +579,8 @@ class XStyleReporter:
                   (table_row(kind, row, self.table_format) for row in rows),
                   encoding='utf-8-sig', extrasaction='ignore')
 
-    def _save_workbook(self, segment_events=()):
+    def _save_workbook(self, segment_events=(), *, frame_number=None):
+        """Write the final report or an immediate snapshot of one committed frame."""
         fields = table_fields('detection', self.table_format)
         workbook = Workbook(write_only=True)
         sheet = workbook.create_sheet('Sheet')
@@ -517,7 +598,9 @@ class XStyleReporter:
         sheet.append(header)
         row_count = 1
         requested = set(self.configuration.get('frames', self.frame_info))
-        for detection in self.packet.detections:
+        detections = (self.packet.detections if frame_number is None
+                      else self.detections[frame_number])
+        for detection in detections:
             if detection.frame not in requested:
                 continue
             row = self.points.get(detection.key)
@@ -528,6 +611,9 @@ class XStyleReporter:
             # Preserve identifiers and reasons as literal strings, even when they start with '='.
             cells = []
             row = table_row('detection', row, self.table_format)
+            if frame_number is not None:
+                # The final sequence classification is unavailable at this point.
+                row = dict(row, Final_Class=None)
             for key in fields:
                 value = row.get(key)
                 if isinstance(value, str):
@@ -545,5 +631,7 @@ class XStyleReporter:
             segments.append(fields)
             for event in segment_events:
                 segments.append([event.get(field) for field in fields])
-        workbook.save(self.folder/'detection_results.xlsx')
+        path = (self.folder / 'detection_results.xlsx' if frame_number is None
+                else self.folder / 'frame_results' / ('result_%06d.xlsx' % frame_number))
+        workbook.save(path)
         workbook.close()

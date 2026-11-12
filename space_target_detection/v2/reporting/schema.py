@@ -48,6 +48,8 @@ DETECTION_FIELDS = [
     'Inference_Mode', 'Approximation_Status',
     'Association_Retained_Mass', 'Association_Support_Scope',
     'Association_PreTruncation_Support',
+    'Star_Status', 'Star_Source_ID', 'Star_Evidence_Support',
+    'Unknown_Star_Confirmation_Support',
 ]
 
 # Canonical records contain only real values. Legacy aliases and empty columns
@@ -81,9 +83,12 @@ _UNSUPPORTED = {
 _LEGACY_FIELDS = {
     'frame': FRAME_FIELDS + ['timestamp_s', 'input_detections', 'classified_detections',
                             'model_target_components', 'inference_mode', 'model_status'],
-    'track': TRACK_FIELDS + ['track_label', 'canonical_track_id'],
+    'track': TRACK_FIELDS + ['track_label', 'canonical_track_id', 'final_identity_reason',
+                            'jump_check_status', 'jump_check_count', 'jump_count', 'jump_fraction',
+                            'jump_covariance_sources'],
     'trajectory': TRAJECTORY_FIELDS + ['timestamp_s', 'track_label', 'canonical_track_id',
-                                      'ra_deg', 'dec_deg'],
+                                      'ra_deg', 'dec_deg', 'jump_covariance_source',
+                                      'jump_mahalanobis_squared', 'jump_threshold_squared', 'jump_detected'],
     'event': EVENT_FIELDS + ['track_label'],
     'detection': DETECTION_FIELDS,
 }

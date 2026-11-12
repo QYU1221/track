@@ -1,0 +1,24 @@
+{
+  "input_metadata": {
+    "attitude_direction": "camera_to_j2000",
+    "camera": {
+      "width": 1288,
+      "height": 1040,
+      "fx_px": 3854.166667,
+      "fy_px": 3854.166667,
+      "cx_px": 643.5,
+      "cy_px": 519.5
+    }
+  },
+  "calibration": {
+    "camera_axis_rotation_deg": 90.0,
+    "skew_px": 0.0,
+    "distortion_model": "none",
+    "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "max_normalized_radius": 2.0,
+    "inverse_tolerance_px": 1e-09,
+    "max_iterations": 30,
+    "calibration_version": "repository_configuration_unverified",
+    "calibration_status": "unverified"
+  }
+}

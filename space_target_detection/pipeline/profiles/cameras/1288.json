@@ -11,7 +11,7 @@
     }
   },
   "calibration": {
-    "camera_axis_rotation_deg": 0.0,
+    "camera_axis_rotation_deg": 90.0,
     "skew_px": 0.0,
     "distortion_model": "none",
     "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],

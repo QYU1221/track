@@ -220,7 +220,8 @@ def frame_from_row(row: Mapping[str, Any], config: NormalizeConfig, *, canonical
 
 
 def detection_from_row(row: Mapping[str, Any], camera: Camera, bounds_action: str,
-                       status: Optional[str] = None) -> Detection:
+                       status: Optional[str] = None, *,
+                       allow_unspecified_reason: bool = False) -> Detection:
     frame = parse_frame(row.get('Frame'))
     identifier = str(row.get('Detection_ID', '')).strip()
     if row.get('Detection_ID') is None or not identifier:
@@ -249,8 +250,11 @@ def detection_from_row(row: Mapping[str, Any], camera: Camera, bounds_action: st
         raise ValueError('out-of-bounds detection %s in Frame %s' % (identifier, frame))
     declared_valid = flag(row.get('Valid'), 'Valid', default=True)
     reason = ('out_of_bounds' if not valid else str(row.get('Invalid_Reason') or ''))
-    if not declared_valid and not reason:
-        raise ValueError('declared invalid detection requires Invalid_Reason')
+    if not declared_valid:
+        if allow_unspecified_reason and not reason.strip():
+            reason = 'unspecified'
+        if not reason:
+            raise ValueError('declared invalid detection requires Invalid_Reason')
     return Detection(frame, identifier, x, y, covariance, status, features,
                      valid=valid and declared_valid, invalid_reason=reason)
 
@@ -293,7 +297,8 @@ def normalize_table(path: Union[str, Path], config: NormalizeConfig,
             if info.frame in frame_map and frame_map[info.frame] != info:
                 raise ValueError('inconsistent timestamp/attitude within Frame %s' % info.frame)
             frame_map[info.frame] = info
-    detections = tuple(detection_from_row(row, config.camera, config.bounds_action) for row in rows)
+    detections = tuple(detection_from_row(row, config.camera, config.bounds_action,
+                                          allow_unspecified_reason=True) for row in rows)
     if frames_path is not None:
         # Metadata provided in a detection row must agree with the sidecar.
         for row in rows:
@@ -323,7 +328,7 @@ def normalize_table(path: Union[str, Path], config: NormalizeConfig,
                     'frame_period_s_assumption': config.frame_period_s}
 
 
-def write_packet(folder: Union[str, Path], packet: ObservationPacket) -> None:
+def write_packet_csvs(folder: Union[str, Path], packet: ObservationPacket) -> None:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     frame_rows = []
@@ -347,6 +352,12 @@ def write_packet(folder: Union[str, Path], packet: ObservationPacket) -> None:
     write_csv(folder/'detections.csv', DETECTION_FIELDS, detection_rows)
     write_csv(folder/'catalog.csv', CATALOG_FIELDS,
               [dict(zip(CATALOG_FIELDS, (star.known_star_id, *star.direction_j2000))) for star in packet.catalog])
+
+
+def write_packet(folder: Union[str, Path], packet: ObservationPacket) -> None:
+    """Persist a complete public input packet for explicit serialization callers."""
+    folder = Path(folder)
+    write_packet_csvs(folder, packet)
     (folder/'input_metadata.json').write_text(json.dumps({
         'model_version': PUBLIC_INPUT_SCHEMA_VERSION, 'mode': 'ANGLE_ONLY', 'camera': asdict(packet.camera),
         'time_scale': packet.time_scale, 'timestamp_unit': 's', 'origin': packet.origin,

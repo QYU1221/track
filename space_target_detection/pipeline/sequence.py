@@ -2,10 +2,7 @@
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
-import hashlib
 import json
-import shutil
 
 
 def process_sequence(input_path, output_dir=None, end_frame=None,
@@ -15,7 +12,6 @@ def process_sequence(input_path, output_dir=None, end_frame=None,
     """Return V2 output; raw tables default to the saved default profile.
 
     ``end_frame`` retains the public API's meaning: number of input frames.
-    A limited run saves a checkpoint when additional configured frames remain.
     No prior, birth, catalog or classification is inferred from previous
     outputs.
     """
@@ -41,7 +37,7 @@ def process_sequence(input_path, output_dir=None, end_frame=None,
     if not input_path.exists():
         raise FileNotFoundError('V2 input does not exist: ' + str(input_path))
 
-    from ..v2.data_io import load_packet, load_normalize_config, normalize_table, write_packet
+    from ..v2.data_io import load_packet, load_normalize_config, normalize_table, write_packet_csvs
     from ..v2.tracking.online_io import run_online_sequence
 
     normalization = None
@@ -92,7 +88,6 @@ def process_sequence(input_path, output_dir=None, end_frame=None,
         selected = packet.frames
     if not selected:
         raise ValueError('no requested frames')
-    limited = False
     if end_frame is not None:
         if resume_path is not None:
             committed = json.loads(Path(resume_path).read_text(encoding='utf-8'))['snapshot']['frame']
@@ -100,57 +95,27 @@ def process_sequence(input_path, output_dir=None, end_frame=None,
                 selected = tuple(f for f in selected if f.frame > committed)
         if not selected:
             raise ValueError('no frames after restored checkpoint')
-        limited = len(selected) > end_frame
         effective['frames'] = [f.frame for f in selected[:end_frame]]
 
     if output_dir is None:
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         name = Path(dataset_name or input_path.name).name
-        folder = Path(__file__).absolute().parents[2] / 'output' / (stamp + '_' + name)
+        folder = Path(r'E:\实验数据\实验结果数据') / (stamp + '_' + name)
     else:
         folder = Path(output_dir).absolute()
     if folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
         raise FileExistsError('V2 tracking output must be an empty directory: ' + str(folder))
-    if limited and checkpoint_path is None:
-        checkpoint_path = folder / 'checkpoint.json'
-    if checkpoint_path is not None and Path(checkpoint_path).exists():
-        raise FileExistsError('checkpoint is immutable; choose a new path')
-
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix='.v2_entry_', dir=folder.parent) as temporary:
-        staging = Path(temporary)
-        if normalization is not None:
-            public_input = staging / 'public_input'
-            write_packet(public_input, packet)
-        else:
-            public_input = input_path
-        if effective != raw:
-            # Relative catalog paths remain relative to the user's prior file.
-            if effective.get('catalog_path'):
-                catalog = Path(effective['catalog_path'])
-                effective['catalog_path'] = str(catalog if catalog.is_absolute()
-                                                else config_path.parent / catalog)
-        report = run_online_sequence(packet, effective, folder, resume_path, checkpoint_path,
-                                     public_input_path=public_input, source_input_path=input_path,
-                                     catalog=bound_catalog, verbose=verbose,log_every=log_every)
-        if normalization is not None:
-            shutil.copytree(public_input, folder / 'public_input')
-            (folder / 'normalization_report.json').write_text(
-                json.dumps(normalization, indent=2, allow_nan=False), encoding='utf-8')
-    entrypoint = {
-        'backend': 'v2', 'algorithm': 'V2 joint Bayesian tracking',
-        'input_path': str(input_path), 'config_path': str(config_path),
-        'config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest(),
-        'metadata_path': str(Path(metadata_path).absolute()) if metadata_path is not None else None,
-        'frames_path': str(Path(frames_path).absolute()) if frames_path is not None else None,
-        'dataset_name': dataset_name, 'frame_limit': end_frame, 'output_dir': str(folder),
-        'configuration_selection': 'automatic_default' if automatic_profile else 'explicit',
-        'profile_id': raw.get('profile_id'),
-        'execution': {'verbose': verbose, 'log_every': log_every},
-    }
-    if input_path.is_file():
-        entrypoint['source_sha256'] = hashlib.sha256(input_path.read_bytes()).hexdigest()
-    (folder / 'entrypoint.json').write_text(json.dumps(entrypoint, indent=2), encoding='utf-8')
+    if checkpoint_path is not None:
+        raise ValueError('checkpoint output is disabled; JSON output has been removed')
+    if effective.get('catalog_path'):
+        catalog = Path(effective['catalog_path'])
+        effective['catalog_path'] = str(catalog if catalog.is_absolute()
+                                        else config_path.parent / catalog)
+    report = run_online_sequence(packet, effective, folder, resume_path,
+                                 public_input_path=input_path, source_input_path=input_path,
+                                 catalog=bound_catalog, verbose=verbose, log_every=log_every)
+    if normalization is not None:
+        write_packet_csvs(folder / 'public_input', packet)
     if verbose:
         print('V2 联合跟踪：%d/%d 帧，%s；输出：%s' % (
             report['frames_committed'], report['frames_read'], report['status'], folder), flush=True)

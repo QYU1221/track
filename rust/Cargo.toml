@@ -1,0 +1,44 @@
+[package]
+name = "space-target-detection"
+version = "0.1.0"
+edition = "2021"
+publish = false
+autobins = false
+autotests = false
+autobenches = false
+autoexamples = false
+default-run = "space_target_detection"
+description = "Native space target detection and Bayesian tracking"
+
+[lib]
+name = "space_target_detection"
+path = "src/lib.rs"
+test = true
+doctest = false
+bench = false
+
+[[bin]]
+name = "space_target_detection"
+path = "src/main.rs"
+test = false
+bench = false
+[dependencies]
+
+libm = "=0.2.16"
+nalgebra = { version = "=0.34.1", default-features = false, features = ["std"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "arbitrary_precision"] }
+
+sha2 = "0.10"
+
+calamine = { version = "=0.31.0", features = ["chrono"] }
+quick-xml = "0.38"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs"] }
+
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[build-dependencies]
+sha2 = "0.10"
+

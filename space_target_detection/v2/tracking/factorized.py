@@ -24,7 +24,7 @@ from ..efficient.config import InferenceBudgetController
 from ..efficient.solver import GraphInferencePolicy
 from ..efficient.graph import ProbabilisticGate
 from .model import Track,JointHistory,predict_track
-from .background import Background,predict_background,project_background
+from .background import Background,predict_background,project_background,has_recent_star_support
 from .background_lifecycle import BackgroundViewIndex,retire_backgrounds
 from .marginals import project_track_marginals
 from .lifecycle import TrackLifecycleManager,canonical_id
@@ -374,11 +374,19 @@ class FactorizedJointTracker:
         probability_fields=('P_Known_Star','P_Unknown_Star','P_Existing_Target','P_Birth_Target','P_Clutter')
         point_sums={d.key:{name:[] for name in probability_fields} for d in accepted}
         point_associations={d.key:{} for d in accepted}
+        star_confirmation={d.key:{} for d in accepted}
         # Accumulate each retained assignment once, instead of scanning every
         # history again for each detection. Preserve each sum's input order.
         birth_prefix='T:N:'+str(frame.frame)+':'
         for hs,_,_ in updated:
             for h in hs:
+                background_assignments=dict(h.background_assignments)
+                for b in h.backgrounds:
+                    source='S_U:'+b.background_id
+                    key=background_assignments.get(source)
+                    if key in star_confirmation and has_recent_star_support(b,frame.frame):
+                        evidence=star_confirmation[key]
+                        evidence[source]=evidence.get(source,0.)+h.weight*b.existence
                 for kind,assignments in (('T',h.target_assignments),('S_K',h.star_assignments),('S_U',h.background_assignments)):
                     for source,key in assignments:
                         if key not in point_sums:continue
@@ -405,6 +413,7 @@ class FactorizedJointTracker:
                 Association_Marginals=tuple(sorted(beta.items())),
                 Association_Retained_Mass=retained_mass.get(d.key),
                 Association_PreTruncation_Support=association_support.get(d.key),
+                Unknown_Star_Confirmation_Support=tuple(sorted(star_confirmation.get(d.key,{}).items())),
                 Association_Support_Scope='PRE_BIRTH_SUPPORT_WITHIN_EVALUATED_ASSOCIATIONS; GATE_AND_BEAM_LOSS_UNKNOWN',**values)
             points.append(p)
         geometry=()

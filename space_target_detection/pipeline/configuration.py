@@ -123,6 +123,17 @@ def resolve_configuration(raw):
     if isinstance(angle, bool) or not math.isfinite(angle) or not 0 < angle < 90:
         raise ValueError('geometry.max_tangent_angle_deg must lie between 0 and 90')
     reporting = result['reporting']
+    from ..v2.reporting.identity import jump_threshold_squared
+    from ..v2.contracts import checked_covariance
+    jump_threshold_squared(reporting['jump_false_alarm_probability'])
+    jump_covariance = reporting['jump_measurement_covariance_px2']
+    provenance = reporting['jump_measurement_covariance_provenance']
+    if not isinstance(provenance, str):
+        raise ValueError('jump_measurement_covariance_provenance must be a string')
+    if jump_covariance is not None:
+        checked_covariance(jump_covariance)
+        if not provenance.strip():
+            raise ValueError('jump measurement covariance requires an explicit provenance')
     if reporting['table_format'] not in ('compact', 'x_legacy'):
         raise ValueError('reporting.table_format must be compact or x_legacy')
     if reporting['detail'] not in ('compact', 'full') or not isinstance(reporting['write_frame_json'], bool):

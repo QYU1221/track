@@ -8,7 +8,10 @@
     "write_frame_json": false,
     "track_frame_png_mode": "every",
     "track_frame_png_interval": 10,
-    "track_frame_png_scale": 1.0
+    "track_frame_png_scale": 1.0,
+    "jump_false_alarm_probability": 0.001,
+    "jump_measurement_covariance_px2": null,
+    "jump_measurement_covariance_provenance": ""
   },
   "undetected_population": {
     "target_initial_expected_count": 1.0,

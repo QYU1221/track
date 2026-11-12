@@ -1,0 +1,123 @@
+{
+  "profile_id": "default-v2-online",
+  "tracker_engine": "factorized_joint_ppp",
+  "camera_profile": "2048",
+  "reporting": {
+    "table_format": "compact",
+    "detail": "compact",
+    "write_frame_json": false,
+    "track_frame_png_mode": "every",
+    "track_frame_png_interval": 10,
+    "track_frame_png_scale": 1.0,
+    "jump_false_alarm_probability": 0.001,
+    "jump_measurement_covariance_px2": null,
+    "jump_measurement_covariance_provenance": ""
+  },
+  "undetected_population": {
+    "target_initial_expected_count": 1.0,
+    "unknown_star_initial_expected_count": 1.0,
+    "target_birth_rate_per_second": 0.2,
+    "unknown_star_birth_rate_per_second": 0.2,
+    "velocity_sigma_rad_s": 0.003063106818492863,
+    "parameter_provenance": "UNCALIBRATED engineering validation prior: one initially undetected object per class in the image Gaussian footprint; independent Poisson immigration 0.2 objects/s per class; zero velocity mean and sigma about sqrt(5)/(7300*0.1) rad/s. Not a calibration or an admission threshold. PPP intensity Gaussian-merged; miss-conditioned shape retained approximately."
+  },
+  "catalog_path": "../../NavStar_8mag.dat",
+  "catalog_mag_limit": 7.5,
+  "tracking": {
+    "miss_update_mode": "retain",
+    "survival_probability": 0.998,
+    "survival_reference_dt_s": 0.1,
+    "q_a": 1e-07,
+    "p_detection": 0.9,
+    "measurement_covariance_px2": [
+      [
+        2.0,
+        0.0
+      ],
+      [
+        0.0,
+        2.0
+      ]
+    ],
+    "parameter_provenance": "default-v2; sensor/R/PD/survival inherited from the reference parameter set; CV acceleration spectrum q_a set to 1e-7, 3-30x above the innovation-likelihood optima (3e-9..3e-8) of formal tracks in segments 01 and 09 (2 s frames), leaving margin for manoeuvres; selection-biased toward smooth tracks; UNCALIBRATED",
+    "max_dt_s": 15.0
+  },
+  "clutter": {
+    "expected_count": 0.5,
+    "parameter_provenance": "existing V2 real diagnostic Gamma(2,4) prior mean .5, applied to the full image as an UNCALIBRATED engineering default; reference false_alarm_probability=.05 is a per-track evidence likelihood, not a Poisson image count"
+  },
+  "background": {
+    "enable_view_dormancy": true,
+    "dormancy_margin_deg": 2.0,
+    "dormancy_sigma": 6.0,
+    "enable_retirement": true,
+    "retirement_existence_probability": 0.01,
+    "retirement_visible_misses": 20,
+    "retirement_min_pd": 0.5,
+    "retirement_mature_mass_fraction": 0.99,
+    "persistence_probability": 1.0,
+    "p_detection": 0.9,
+    "measurement_covariance_px2": [
+      [
+        2.0,
+        0.0
+      ],
+      [
+        0.0,
+        2.0
+      ]
+    ],
+    "parameter_provenance": "V2 static inertial background model; shared inherited PD/R are engineering reuse, not independently calibrated star parameters"
+  },
+  "lifecycle": {
+    "dormant_after_s": 2.0,
+    "reliable_association_probability": 0.7,
+    "outside_visibility_probability": 0.01,
+    "outside_fov_stop_s": 4.0,
+    "candidate_existence_probability": 0.5,
+    "confirmed_existence_probability": 0.95,
+    "rejection_existence_probability": 0.05,
+    "enable_dormancy": true,
+    "confirmation_min_frames": 4,
+    "confirmation_window_frames": 8,
+    "candidate_deadline_s": 48.0,
+    "candidate_low_probability": 0.1,
+    "candidate_low_s": 10.0,
+    "enable_candidate_pruning": true,
+    "policy_version": "lifecycle9.0-identity-and-fov-exit",
+    "decision_calibration": "UNCALIBRATED_DECISION_COST"
+  },
+  "inference": {
+    "association_top_k": null,
+    "gate_probability": 0.99,
+    "top_k": 4,
+    "max_nodes": 1024,
+    "max_edges": 100000,
+    "max_component_nodes": 1024,
+    "max_local_hypotheses": 128,
+    "max_candidates": 32,
+    "max_search_states": 200000,
+    "max_memory_bytes": 2147483648,
+    "max_frame_seconds": 60.0,
+    "preserve_target_associations": false
+  },
+  "input_metadata": {
+    "timestamp_unit": "s",
+    "frame_period_s": 0.1,
+    "frame_zero": 0,
+    "timestamp_zero_s": 0.0,
+    "bounds_action": "mark_invalid",
+    "max_rows": 1000000,
+    "time_scale": "UNVERIFIED_SECONDS_FROM_NOMINAL_PLOT_PERIOD",
+    "column_mapping": {}
+  },
+  "bootstrap": {
+    "schema": "population-bootstrap-2",
+    "star_detection_probability": 0.9,
+    "birth_scope": "undetected target and uncatalogued-star Poisson populations; every valid frame may produce first-detection candidates in the same source update; no fixed finite birth cohort"
+  },
+  "geometry": {
+    "max_tangent_angle_deg": 80.0
+  },
+  "configuration_schema": "online-parameters-1"
+}

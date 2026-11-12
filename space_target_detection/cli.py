@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--input','-i',help='CSV/XLSX 检测表或规范化输入目录')
     parser.add_argument('--dataset','-d',help='datasets 目录中的文件名')
     parser.add_argument('--datasets-root',help='数据集目录')
-    parser.add_argument('--output','-o',help='输出目录')
+    parser.add_argument('--output','-o',help=r'输出目录；默认保存到 E:\实验数据\实验结果数据 下的时间戳子目录')
     parser.add_argument('--frames','-n',type=int,help='只处理前 N 帧')
     parser.add_argument('--quiet','-q',action='store_true',help='关闭终端进度')
     parser.add_argument('--log-every',type=int,default=10,help='终端进度帧间隔')

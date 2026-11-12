@@ -12,6 +12,12 @@ from ..gnomonic import GnomonicPlane
 from ..exact.contracts import probability,identifier
 
 
+def has_recent_star_support(background, frame):
+    """Four distinct measured frames in the inclusive eight-frame window."""
+    return len({key[0] for key in background.support_keys
+                if frame - 7 <= key[0] <= frame}) >= 4
+
+
 @dataclass(frozen=True)
 class GaussianDirection:
     mean: tuple
